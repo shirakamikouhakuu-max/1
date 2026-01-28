@@ -1,0 +1,669 @@
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+
+/**
+ * Realtime Quiz (VN) – Kahoot-like MVP
+ * - Host tạo phòng -> mã phòng
+ * - Người chơi vào /play, nhập mã phòng + tên
+ * - Câu hỏi chạy theo timer, điểm: đúng + nhanh
+ * - Sau mỗi câu: hiển thị Top 5
+ * - Kết thúc: hiển thị Top 15
+ *
+ * Lưu ý:
+ * - Dữ liệu phòng lưu trong RAM (restart là mất).
+ */
+
+// ================== SỬA CÂU HỎI Ở ĐÂY ==================
+const QUIZ = {
+  title: "Mini Kahoot Realtime – Top 5 sau mỗi câu",
+  questions: [
+    {
+      text: "1) Thủ đô của Việt Nam là gì?",
+      choices: ["TP.HCM", "Hà Nội", "Đà Nẵng", "Huế"],
+      correctIndex: 1,
+      timeLimitSec: 15
+    },
+    {
+      text: "2) 5 x 6 = ?",
+      choices: ["11", "25", "30", "56"],
+      correctIndex: 2,
+      timeLimitSec: 12
+    },
+    {
+      text: "3) Biển Đông tiếng Anh là gì?",
+      choices: ["East Sea", "Red Sea", "Black Sea", "Yellow Sea"],
+      correctIndex: 0,
+      timeLimitSec: 15
+    }
+  ]
+};
+
+// Điểm: đúng + nhanh (tối đa 1000, giảm tuyến tính theo thời gian)
+const MAX_POINTS = 1000;
+function computePoints({ correct, elapsedMs, limitSec }) {
+  if (!correct) return 0;
+  const limitMs = limitSec * 1000;
+  const t = Math.max(0, Math.min(1, elapsedMs / limitMs)); // 0..1
+  const pts = Math.round(MAX_POINTS * (1 - t));
+  return Math.max(1, pts);
+}
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+
+function makeCode(len = 6) {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let out = "";
+  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}
+
+const rooms = new Map();
+
+function publicState(room) {
+  return { code: room.code, started: room.started, ended: room.ended, qIndex: room.qIndex, total: QUIZ.questions.length };
+}
+
+function safeQuestionPayload(room) {
+  const q = QUIZ.questions[room.qIndex];
+  return { qIndex: room.qIndex, total: QUIZ.questions.length, text: q.text, choices: q.choices, timeLimitSec: q.timeLimitSec, startedAtMs: room.qStartAtMs };
+}
+
+function getLeaderboard(room) {
+  const list = [];
+  for (const [sid, p] of room.players.entries()) list.push({ socketId: sid, name: p.name, score: p.score });
+  list.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+  return list;
+}
+
+function broadcast(room) {
+  io.to(room.code).emit("room:state", publicState(room));
+}
+
+function startQuestion(room) {
+  if (room.timer) clearTimeout(room.timer);
+  room.qStartAtMs = Date.now();
+  for (const p of room.players.values()) p.lastAnswer = null;
+
+  io.to(room.code).emit("question:start", safeQuestionPayload(room));
+
+  const q = QUIZ.questions[room.qIndex];
+  room.timer = setTimeout(() => endQuestion(room), q.timeLimitSec * 1000);
+}
+
+function endQuestion(room) {
+  if (room.ended) return;
+  if (room.timer) { clearTimeout(room.timer); room.timer = null; }
+
+  const q = QUIZ.questions[room.qIndex];
+  const top5 = getLeaderboard(room).slice(0, 5);
+
+  io.to(room.code).emit("question:end", { qIndex: room.qIndex, correctIndex: q.correctIndex, top5 });
+  broadcast(room);
+}
+
+function endGame(room) {
+  room.ended = true;
+  if (room.timer) clearTimeout(room.timer);
+
+  const leaderboard = getLeaderboard(room);
+  io.to(room.code).emit("game:end", { top15: leaderboard.slice(0, 15), totalPlayers: leaderboard.length });
+  broadcast(room);
+}
+
+// ================== UI (HTML/CSS/JS nhúng trực tiếp) ==================
+function layout(title, body) {
+  return `<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>${title}</title>
+  <style>
+    :root{--bg:#0b1020;--text:#e7ecff;--muted:#a9b3d9;--line:#23305c;--btn:#2d3a6b;--btn2:#1f2a53;--good:#37d67a;--bad:#ff5a5f}
+    *{box-sizing:border-box;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    body{margin:0;background:radial-gradient(1200px 800px at 20% 10%, #1a2550 0%, var(--bg) 55%);color:var(--text)}
+    a{color:var(--text);text-decoration:none}
+    .container{max-width:980px;margin:0 auto;padding:24px}
+    .header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+    h1{margin:0;font-size:22px}
+    .card{background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03));border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 8px 30px rgba(0,0,0,.25)}
+    .grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}
+    @media(min-width:860px){.grid{grid-template-columns:1fr 1fr}}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    label{font-size:13px;color:var(--muted)}
+    input{width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(0,0,0,.18);color:var(--text);outline:none}
+    .btn{padding:10px 14px;border-radius:12px;border:1px solid var(--line);background:var(--btn);color:var(--text);cursor:pointer;font-weight:800}
+    .btn:hover{background:var(--btn2)}
+    .btn:disabled{opacity:.55;cursor:not-allowed}
+    .small{font-size:12px;color:var(--muted)}
+    .bigcode{font-size:28px;letter-spacing:3px;font-weight:900}
+    .pill{display:inline-flex;align-items:center;gap:8px;padding:7px 10px;border-radius:999px;border:1px solid var(--line);background:rgba(0,0,0,.14);color:var(--muted);font-size:12px}
+    .dot{width:8px;height:8px;border-radius:999px;background:var(--muted);display:inline-block}
+    .dot.good{background:var(--good)} .dot.bad{background:var(--bad)}
+    hr{border:0;border-top:1px solid var(--line);margin:14px 0}
+    .choices{display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px}
+    @media(min-width:720px){.choices{grid-template-columns:1fr 1fr}}
+    .choice{padding:12px;border-radius:14px;border:1px solid var(--line);background:rgba(0,0,0,.14);cursor:pointer;text-align:left}
+    .choice:hover{background:rgba(0,0,0,.22)}
+    .choice[disabled]{opacity:.6;cursor:not-allowed}
+    .badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:12px;border:1px solid var(--line);background:rgba(0,0,0,.14);color:var(--muted)}
+    .good{color:var(--good)} .bad{color:var(--bad)}
+    table{width:100%;border-collapse:collapse;margin-top:10px}
+    th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left;font-size:14px}
+    th{color:var(--muted);font-weight:800}
+  </style>
+</head>
+<body>
+  <div class="container">${body}</div>
+  <script src="/socket.io/socket.io.js"></script>
+</body>
+</html>`;
+}
+
+app.get("/health", (_, res) => res.json({ ok: true }));
+
+app.get("/", (_, res) => res.send(layout("Mini Kahoot Realtime", `
+  <div class="card">
+    <div class="header">
+      <h1>${QUIZ.title}</h1>
+      <span class="pill"><span class="dot" id="connDot"></span><span id="connText">Đang kết nối…</span></span>
+    </div>
+    <p class="small" style="margin:10px 0 0">
+      Người chơi vào <b>/play</b>, nhập <b>Mã phòng</b> + <b>Tên</b>. Host vào <b>/host</b>.
+    </p>
+    <hr/>
+    <div class="row">
+      <a class="btn" href="/host">Host (MC)</a>
+      <a class="btn" href="/play">Người chơi</a>
+    </div>
+  </div>
+
+  <script>
+    const socket = io();
+    const dot = document.getElementById("connDot");
+    const text = document.getElementById("connText");
+    function set(ok, msg){
+      dot.classList.remove("good","bad");
+      dot.classList.add(ok ? "good" : "bad");
+      text.textContent = msg;
+    }
+    socket.on("connect", ()=> set(true, "Đã kết nối"));
+    socket.on("disconnect", ()=> set(false, "Mất kết nối"));
+    socket.on("connect_error", ()=> set(false, "Lỗi kết nối"));
+  </script>
+`)));
+
+app.get("/host", (_, res) => res.send(layout("Host", `
+  <div class="header">
+    <h1>Host (MC)</h1>
+    <div class="row">
+      <a class="pill" href="/play">Mở trang Người chơi</a>
+      <span class="pill"><span class="dot" id="connDot"></span><span id="connText">Đang kết nối…</span></span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="row" style="justify-content:space-between;align-items:flex-start">
+        <div>
+          <div class="small">Mã phòng</div>
+          <div id="roomCode" class="bigcode">—</div>
+          <div class="small">Bộ câu hỏi: <b>${QUIZ.title}</b></div>
+        </div>
+        <div class="row">
+          <span class="pill">Người chơi: <b id="playersCount">0</b></span>
+          <span class="pill">Câu: <b id="qCounter">—</b></span>
+        </div>
+      </div>
+      <hr/>
+      <div class="row">
+        <button id="btnCreate" class="btn">Tạo phòng</button>
+        <button id="btnStart" class="btn" disabled>Bắt đầu</button>
+        <button id="btnReveal" class="btn" disabled>Hiện kết quả</button>
+        <button id="btnNext" class="btn" disabled>Câu tiếp theo</button>
+      </div>
+      <p class="small" style="margin:10px 0 0">
+        Nếu không bấm “Hiện kết quả”, hệ thống tự kết thúc câu khi hết thời gian.
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="small">Câu hỏi đang chạy</div>
+      <h2 id="qText" style="margin:6px 0 0;font-size:18px">—</h2>
+      <div class="row" style="margin-top:8px">
+        <span class="badge">Thời gian: <b id="qTime">—</b></span>
+        <span class="badge">Đã trả lời: <b id="qAnswered">0</b></span>
+      </div>
+      <div id="choices" class="choices"></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <div class="small">Bảng xếp hạng</div>
+    <h2 style="margin:6px 0 0;font-size:18px">Top 5 (sau mỗi câu)</h2>
+    <table>
+      <thead><tr><th>#</th><th>Tên</th><th>Điểm</th></tr></thead>
+      <tbody id="lbBody"><tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr></tbody>
+    </table>
+
+    <div id="finalWrap" style="display:none;margin-top:14px">
+      <hr/>
+      <div class="small">Kết quả cuối (Top 15)</div>
+      <table>
+        <thead><tr><th>#</th><th>Tên</th><th>Điểm</th></tr></thead>
+        <tbody id="finalBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const socket = io();
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+    const dot = $("connDot");
+    const text = $("connText");
+    function setConn(ok, msg){
+      dot.classList.remove("good","bad");
+      dot.classList.add(ok ? "good" : "bad");
+      text.textContent = msg;
+    }
+
+    let code = null;
+    let state = null;
+    let connected = false;
+
+    socket.on("connect", ()=> { connected = true; setConn(true, "Đã kết nối"); setButtons(); });
+    socket.on("disconnect", ()=> { connected = false; setConn(false, "Mất kết nối"); setButtons(); });
+    socket.on("connect_error", ()=> { connected = false; setConn(false, "Lỗi kết nối"); setButtons(); });
+
+    function setButtons(){
+      $("btnStart").disabled = !connected || !code || (state && state.started);
+      $("btnReveal").disabled = !connected || !code || !(state && state.started) || (state && state.ended);
+      $("btnNext").disabled  = !connected || !code || !(state && state.started) || (state && state.ended);
+    }
+
+    $("btnCreate").onclick = () => {
+      if (!connected) return alert("Chưa kết nối server realtime. Hãy tải lại trang.");
+      socket.emit("host:createRoom", {}, (resp) => {
+        if (!resp?.ok) return alert(resp?.error || "Không tạo được phòng");
+        code = resp.code;
+        $("roomCode").textContent = code;
+        $("finalWrap").style.display = "none";
+        $("finalBody").innerHTML = "";
+        setButtons();
+      });
+    };
+
+    $("btnStart").onclick = () => {
+      socket.emit("host:start", { code }, (resp) => {
+        if (!resp?.ok) return alert(resp?.error || "Không thể bắt đầu");
+        $("finalWrap").style.display = "none";
+        $("finalBody").innerHTML = "";
+        setButtons();
+      });
+    };
+
+    $("btnReveal").onclick = () => {
+      socket.emit("host:reveal", { code }, (resp) => {
+        if (!resp?.ok) alert(resp?.error || "Lỗi");
+      });
+    };
+
+    $("btnNext").onclick = () => {
+      socket.emit("host:next", { code }, (resp) => {
+        if (!resp?.ok) return alert(resp?.error || "Lỗi");
+        setButtons();
+      });
+    };
+
+    socket.on("players:count", ({count}) => $("playersCount").textContent = String(count ?? 0));
+
+    socket.on("room:state", (s) => {
+      state = s;
+      if (state?.total != null && state?.qIndex != null) {
+        $("qCounter").textContent = `${state.qIndex + (state.started ? 1 : 0)}/${state.total}`;
+      }
+      setButtons();
+    });
+
+    socket.on("question:progress", ({answered, totalPlayers}) => {
+      $("qAnswered").textContent = `${answered}/${totalPlayers}`;
+    });
+
+    socket.on("question:start", (q) => {
+      $("qText").textContent = q.text;
+      $("qTime").textContent = q.timeLimitSec + "s";
+      $("qAnswered").textContent = "0";
+      $("choices").innerHTML = q.choices.map((c,i) =>
+        `<div class="choice"><b>${String.fromCharCode(65+i)})</b> ${esc(c)}</div>`
+      ).join("");
+    });
+
+    socket.on("question:end", ({correctIndex, top5}) => {
+      $("lbBody").innerHTML = (top5 || []).map((p,i) =>
+        `<tr><td>${i+1}</td><td>${esc(p.name)}</td><td>${p.score}</td></tr>`
+      ).join("") || `<tr><td colspan="3" class="small">Chưa có người chơi.</td></tr>`;
+
+      [...$("choices").querySelectorAll(".choice")].forEach((node, idx) => {
+        if (idx === correctIndex) node.innerHTML += ' <span class="badge good">✔ đúng</span>';
+      });
+    });
+
+    socket.on("game:end", ({top15, totalPlayers}) => {
+      $("finalWrap").style.display = "block";
+      $("finalBody").innerHTML = (top15 || []).map((p,i) =>
+        `<tr><td>${i+1}</td><td>${esc(p.name)}</td><td>${p.score}</td></tr>`
+      ).join("") || `<tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr>`;
+      alert("Kết thúc game! Tổng người chơi: " + totalPlayers);
+      setButtons();
+    });
+  </script>
+`)));
+
+app.get("/play", (_, res) => res.send(layout("Người chơi", `
+  <div class="header">
+    <h1>Người chơi</h1>
+    <div class="row">
+      <a class="pill" href="/host">Mở trang Host (MC)</a>
+      <span class="pill"><span class="dot" id="connDot"></span><span id="connText">Đang kết nối…</span></span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="small">Tham gia phòng</div>
+      <div class="row" style="margin-top:8px">
+        <div style="flex:1;min-width:220px">
+          <label>Mã phòng</label>
+          <input id="code" placeholder="ABC123"/>
+        </div>
+        <div style="flex:1;min-width:220px">
+          <label>Tên của bạn</label>
+          <input id="name" placeholder="Nguyễn Văn A"/>
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="btnJoin" class="btn">Tham gia</button>
+        <span id="joinStatus" class="small"></span>
+      </div>
+      <hr/>
+      <div class="row">
+        <span class="pill">Điểm: <b id="score">0</b></span>
+        <span class="pill">Hạng (tạm tính): <b id="rank">—</b></span>
+        <span class="pill">Còn lại: <b id="timeLeft">—</b></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="small">Câu hỏi</div>
+      <h2 id="qText" style="margin:6px 0 0;font-size:18px">—</h2>
+      <div id="choices" class="choices"></div>
+      <div id="feedback" class="small" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <div class="small">Bảng xếp hạng</div>
+    <h2 style="margin:6px 0 0;font-size:18px">Top 5 (sau mỗi câu)</h2>
+    <table>
+      <thead><tr><th>#</th><th>Tên</th><th>Điểm</th></tr></thead>
+      <tbody id="lbBody"><tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr></tbody>
+    </table>
+
+    <div id="finalWrap" style="display:none;margin-top:14px">
+      <hr/>
+      <div class="small">Kết quả cuối (Top 15)</div>
+      <table>
+        <thead><tr><th>#</th><th>Tên</th><th>Điểm</th></tr></thead>
+        <tbody id="finalBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const socket = io();
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+
+    const dot = $("connDot");
+    const text = $("connText");
+    function setConn(ok, msg){
+      dot.classList.remove("good","bad");
+      dot.classList.add(ok ? "good" : "bad");
+      text.textContent = msg;
+    }
+    socket.on("connect", ()=> setConn(true, "Đã kết nối"));
+    socket.on("disconnect", ()=> setConn(false, "Mất kết nối"));
+    socket.on("connect_error", ()=> setConn(false, "Lỗi kết nối"));
+
+    let joined = false;
+    let roomCode = null;
+    let timer = null;
+    let myAnswered = false;
+
+    function clearTimer(){ if (timer) clearInterval(timer); timer = null; }
+    function setCountdown(startedAtMs, timeLimitSec){
+      clearTimer();
+      const tick = () => {
+        const elapsed = Date.now() - startedAtMs;
+        const remainMs = Math.max(0, timeLimitSec*1000 - elapsed);
+        $("timeLeft").textContent = Math.ceil(remainMs/1000) + "s";
+        if (remainMs <= 0) clearTimer();
+      };
+      tick();
+      timer = setInterval(tick, 200);
+    }
+
+    $("btnJoin").onclick = () => {
+      const code = $("code").value.trim().toUpperCase();
+      const name = $("name").value.trim();
+      socket.emit("player:join", { code, name }, (resp) => {
+        if (!resp?.ok) {
+          joined = false;
+          $("joinStatus").innerHTML = '<span class="bad">✖ ' + esc(resp?.error || "Không tham gia được") + '</span>';
+          return;
+        }
+        joined = true;
+        roomCode = code;
+        $("joinStatus").innerHTML = '<span class="good">✔ Đã vào phòng ' + esc(code) + '</span>';
+        $("finalWrap").style.display = "none";
+        $("finalBody").innerHTML = "";
+      });
+    };
+
+    socket.on("question:start", (q) => {
+      if (!joined) return;
+      myAnswered = false;
+      $("feedback").textContent = "";
+      $("qText").textContent = q.text;
+      setCountdown(q.startedAtMs, q.timeLimitSec);
+
+      $("choices").innerHTML = q.choices.map((c,i) =>
+        '<button class="choice" data-i="'+i+'"><b>'+String.fromCharCode(65+i)+')</b> '+esc(c)+'</button>'
+      ).join("");
+
+      [...$("choices").querySelectorAll("button.choice")].forEach(btn => {
+        btn.onclick = () => {
+          if (myAnswered) return;
+          myAnswered = true;
+
+          const choiceIndex = Number(btn.dataset.i);
+          [...$("choices").querySelectorAll("button.choice")].forEach(b => b.setAttribute("disabled","disabled"));
+
+          socket.emit("player:answer", { code: roomCode, choiceIndex }, (resp) => {
+            if (!resp?.ok) {
+              $("feedback").innerHTML = '<span class="bad">✖ ' + esc(resp?.error || "Lỗi") + '</span>';
+              return;
+            }
+            $("score").textContent = String(resp.totalScore ?? 0);
+            $("rank").textContent = String(resp.rank ?? "—");
+            $("feedback").innerHTML = resp.correct
+              ? '<span class="good">✔ Đúng</span> • +' + resp.points + " điểm"
+              : '<span class="bad">✖ Sai</span> • +0 điểm';
+          });
+        };
+      });
+    });
+
+    socket.on("question:end", ({correctIndex, top5}) => {
+      if (!joined) return;
+      clearTimer();
+
+      [...$("choices").querySelectorAll("button.choice")].forEach((b, idx) => {
+        if (idx === correctIndex) b.innerHTML += ' <span class="badge good">✔ đúng</span>';
+      });
+
+      $("lbBody").innerHTML = (top5 || []).map((p,i) =>
+        '<tr><td>'+(i+1)+'</td><td>'+esc(p.name)+'</td><td>'+p.score+'</td></tr>'
+      ).join("") || '<tr><td colspan="3" class="small">Chưa có người chơi.</td></tr>';
+    });
+
+    socket.on("game:end", ({top15, totalPlayers}) => {
+      if (!joined) return;
+      $("finalWrap").style.display = "block";
+      $("finalBody").innerHTML = (top15 || []).map((p,i) =>
+        '<tr><td>'+(i+1)+'</td><td>'+esc(p.name)+'</td><td>'+p.score+'</td></tr>'
+      ).join("") || '<tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr>';
+      alert("Kết thúc game! Tổng người chơi: " + totalPlayers);
+    });
+  </script>
+`)));
+
+// ================== SOCKET EVENTS ==================
+io.on("connection", (socket) => {
+  socket.on("host:createRoom", (_, ack) => {
+    const code = makeCode();
+    const room = {
+      code,
+      hostId: socket.id,
+      createdAt: Date.now(),
+      started: false,
+      ended: false,
+      qIndex: 0,
+      qStartAtMs: 0,
+      timer: null,
+      players: new Map()
+    };
+    rooms.set(code, room);
+    socket.join(code);
+    ack?.({ ok: true, code, quizTitle: QUIZ.title, total: QUIZ.questions.length });
+    broadcast(room);
+  });
+
+  socket.on("host:start", ({ code }, ack) => {
+    const room = rooms.get(code);
+    if (!room) return ack?.({ ok: false, error: "Không tìm thấy phòng" });
+    if (room.hostId !== socket.id) return ack?.({ ok: false, error: "Bạn không phải Host" });
+    if (room.started) return ack?.({ ok: false, error: "Phòng đã bắt đầu rồi" });
+
+    room.started = true;
+    room.ended = false;
+    room.qIndex = 0;
+
+    startQuestion(room);
+    broadcast(room);
+    ack?.({ ok: true });
+  });
+
+  socket.on("host:reveal", ({ code }, ack) => {
+    const room = rooms.get(code);
+    if (!room) return ack?.({ ok: false, error: "Không tìm thấy phòng" });
+    if (room.hostId !== socket.id) return ack?.({ ok: false, error: "Bạn không phải Host" });
+    endQuestion(room);
+    ack?.({ ok: true });
+  });
+
+  socket.on("host:next", ({ code }, ack) => {
+    const room = rooms.get(code);
+    if (!room) return ack?.({ ok: false, error: "Không tìm thấy phòng" });
+    if (room.hostId !== socket.id) return ack?.({ ok: false, error: "Bạn không phải Host" });
+    if (!room.started) return ack?.({ ok: false, error: "Chưa bắt đầu" });
+
+    endQuestion(room);
+    room.qIndex += 1;
+
+    if (room.qIndex >= QUIZ.questions.length) {
+      endGame(room);
+      return ack?.({ ok: true, ended: true });
+    }
+
+    startQuestion(room);
+    broadcast(room);
+    ack?.({ ok: true, ended: false });
+  });
+
+  socket.on("player:join", ({ code, name }, ack) => {
+    const room = rooms.get(code);
+    if (!room) return ack?.({ ok: false, error: "Mã phòng không đúng" });
+    if (room.ended) return ack?.({ ok: false, error: "Game đã kết thúc" });
+
+    const cleanName = String(name || "").trim().slice(0, 24);
+    if (!cleanName) return ack?.({ ok: false, error: "Bạn cần nhập tên" });
+
+    room.players.set(socket.id, { name: cleanName, score: 0, lastAnswer: null });
+    socket.join(code);
+
+    io.to(code).emit("players:count", { count: room.players.size });
+
+    ack?.({ ok: true, state: publicState(room), quizTitle: QUIZ.title, total: QUIZ.questions.length });
+
+    if (room.started && !room.ended) socket.emit("question:start", safeQuestionPayload(room));
+    broadcast(room);
+  });
+
+  socket.on("player:answer", ({ code, choiceIndex }, ack) => {
+    const room = rooms.get(code);
+    if (!room) return ack?.({ ok: false, error: "Không tìm thấy phòng" });
+    if (!room.started || room.ended) return ack?.({ ok: false, error: "Game chưa chạy hoặc đã kết thúc" });
+
+    const p = room.players.get(socket.id);
+    if (!p) return ack?.({ ok: false, error: "Bạn chưa tham gia" });
+
+    const q = QUIZ.questions[room.qIndex];
+    if (!q) return ack?.({ ok: false, error: "Không có câu hỏi" });
+
+    if (p.lastAnswer && p.lastAnswer.qIndex === room.qIndex) {
+      return ack?.({ ok: false, error: "Bạn đã trả lời câu này rồi" });
+    }
+
+    const elapsedMs = Date.now() - room.qStartAtMs;
+    const selected = Number(choiceIndex);
+    const correct = selected === q.correctIndex;
+
+    const pts = computePoints({ correct, elapsedMs, limitSec: q.timeLimitSec });
+    p.score += pts;
+    p.lastAnswer = { qIndex: room.qIndex, choiceIndex: selected, elapsedMs, correct };
+
+    const leaderboard = getLeaderboard(room);
+    const rank = leaderboard.findIndex(x => x.socketId === socket.id) + 1;
+
+    ack?.({ ok: true, correct, points: pts, totalScore: p.score, rank });
+
+    let answered = 0;
+    for (const pl of room.players.values()) {
+      if (pl.lastAnswer && pl.lastAnswer.qIndex === room.qIndex) answered++;
+    }
+    io.to(code).emit("question:progress", { answered, totalPlayers: room.players.size });
+  });
+
+  socket.on("disconnect", () => {
+    for (const room of rooms.values()) {
+      if (room.hostId === socket.id) {
+        endGame(room);
+        rooms.delete(room.code);
+        continue;
+      }
+      if (room.players.has(socket.id)) {
+        room.players.delete(socket.id);
+        io.to(room.code).emit("players:count", { count: room.players.size });
+        broadcast(room);
+      }
+    }
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, "0.0.0.0", () => console.log("Realtime quiz running on port", PORT));
