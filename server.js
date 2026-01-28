@@ -169,8 +169,8 @@ function layout(title, body) {
   </style>
 </head>
 <body>
-  <div class="container">${body}</div>
   <script src="/socket.io/socket.io.js"></script>
+  <div class="container">${body}</div>
 </body>
 </html>`;
 }
