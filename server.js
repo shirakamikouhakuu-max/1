@@ -7,7 +7,6 @@ const { Server } = require("socket.io");
 const HOST_KEY = process.env.HOST_KEY || "CHANGE_ME_HOST_KEY";
 const HOST_COOKIE_NAME = "host_auth";
 
-// Tạo chữ ký cookie dựa trên HOST_KEY (không lưu key ở client)
 function hostSig() {
   return crypto.createHmac("sha256", HOST_KEY).update("host-ok").digest("hex");
 }
@@ -59,13 +58,12 @@ function clearHostCookie(req, res) {
 
 function requireHost(req, res, next) {
   if (hasHostCookie(req)) return next();
-  // Không có key -> đưa sang trang nhập key
   return res.redirect("/host-login");
 }
 
 // ================== SỬA CÂU HỎI Ở ĐÂY ==================
 const QUIZ = {
-  title: "Mini Kahoot Realtime – Top 5 sau mỗi câu",
+  title: "Mini Kahoot Realtime – Tổng điểm + Top đúng nhanh",
   questions: [
     {
       text: "1) Thủ đô của Việt Nam là gì?",
@@ -88,6 +86,7 @@ const QUIZ = {
   ]
 };
 
+// Điểm: đúng + nhanh
 const MAX_POINTS = 1000;
 function computePoints({ correct, elapsedMs, limitSec }) {
   if (!correct) return 0;
@@ -134,13 +133,31 @@ function safeQuestionPayload(room) {
   };
 }
 
-function getLeaderboard(room) {
+// ====== BẢNG TỔNG ĐIỂM (TOP 15) ======
+function getTotalLeaderboard(room) {
   const list = [];
   for (const [sid, p] of room.players.entries()) {
     list.push({ socketId: sid, name: p.name, score: p.score });
   }
   list.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
   return list;
+}
+
+// ====== TOP 5 ĐÚNG NHANH NHẤT (CÂU VỪA RỒI) ======
+function getFastCorrectTop5(room) {
+  const arr = [];
+  for (const p of room.players.values()) {
+    const a = p.lastAnswer;
+    if (a && a.qIndex === room.qIndex && a.correct) {
+      arr.push({
+        name: p.name,
+        elapsedMs: a.elapsedMs,
+        points: a.points
+      });
+    }
+  }
+  arr.sort((x, y) => x.elapsedMs - y.elapsedMs || y.points - x.points || x.name.localeCompare(y.name));
+  return arr.slice(0, 5);
 }
 
 function broadcast(room) {
@@ -150,6 +167,8 @@ function broadcast(room) {
 function startQuestion(room) {
   if (room.timer) clearTimeout(room.timer);
   room.qStartAtMs = Date.now();
+
+  // reset lastAnswer cho câu mới
   for (const p of room.players.values()) p.lastAnswer = null;
 
   io.to(room.code).emit("question:start", safeQuestionPayload(room));
@@ -166,12 +185,15 @@ function endQuestion(room) {
   }
 
   const q = QUIZ.questions[room.qIndex];
-  const top5 = getLeaderboard(room).slice(0, 5);
+
+  const totalTop15 = getTotalLeaderboard(room).slice(0, 15);
+  const fastTop5 = getFastCorrectTop5(room);
 
   io.to(room.code).emit("question:end", {
     qIndex: room.qIndex,
     correctIndex: q.correctIndex,
-    top5
+    totalTop15,     // bảng tổng điểm
+    fastTop5        // top đúng nhanh nhất của câu vừa rồi
   });
 
   broadcast(room);
@@ -181,10 +203,11 @@ function endGame(room) {
   room.ended = true;
   if (room.timer) clearTimeout(room.timer);
 
-  const leaderboard = getLeaderboard(room);
+  const totalTop15 = getTotalLeaderboard(room).slice(0, 15);
+
   io.to(room.code).emit("game:end", {
-    top15: leaderboard.slice(0, 15),
-    totalPlayers: leaderboard.length
+    totalTop15,
+    totalPlayers: getTotalLeaderboard(room).length
   });
 
   broadcast(room);
@@ -244,7 +267,7 @@ function layout(title, body) {
 app.get("/health", (_, res) => res.json({ ok: true }));
 
 app.get("/", (_, res) => {
-  res.send(layout("Mini Kahoot Realtime", `
+  res.send(layout("Quiz Realtime", `
     <div class="card">
       <div class="header">
         <h1>${QUIZ.title}</h1>
@@ -274,7 +297,7 @@ app.get("/host-login", (req, res) => {
         </div>
       </form>
       <hr/>
-      <p class="small">Tip: bạn cũng có thể vào nhanh bằng link: <b>/host?key=YOUR_KEY</b></p>
+      <p class="small">Bạn cũng có thể vào nhanh: <b>/host?key=YOUR_KEY</b></p>
     </div>
   `));
 });
@@ -302,7 +325,7 @@ app.get("/host-logout", (req, res) => {
   return res.redirect("/play");
 });
 
-// ---------- HOST (có auto-login qua query ?key=...) ----------
+// ---------- HOST ----------
 app.get("/host", (req, res, next) => {
   const k = String(req.query.key || "").trim();
   if (k && k === HOST_KEY) {
@@ -341,7 +364,7 @@ app.get("/host", (req, res, next) => {
           <button id="btnReveal" class="btn" disabled>Hiện kết quả</button>
           <button id="btnNext" class="btn" disabled>Câu tiếp theo</button>
         </div>
-        <p class="small" style="margin:10px 0 0">Top 5 sẽ hiện sau mỗi câu. Top 15 hiện khi kết thúc.</p>
+        <p class="small" style="margin:10px 0 0">Bảng tổng điểm (Top 15) cập nhật sau mỗi câu. Dưới đó là Top 5 đúng nhanh nhất của câu vừa rồi.</p>
       </div>
 
       <div class="card">
@@ -355,20 +378,22 @@ app.get("/host", (req, res, next) => {
       </div>
     </div>
 
-    <div class="card" style="margin-top:16px">
-      <div class="small">Bảng xếp hạng</div>
-      <h2 style="margin:6px 0 0;font-size:18px">Top 5 (sau mỗi câu)</h2>
-      <table>
-        <thead><tr><th>#</th><th>Tên</th><th>Điểm</th></tr></thead>
-        <tbody id="lbBody"><tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr></tbody>
-      </table>
-
-      <div id="finalWrap" style="display:none;margin-top:14px">
-        <hr/>
-        <div class="small">Kết quả cuối (Top 15)</div>
+    <div class="grid" style="margin-top:16px">
+      <div class="card">
+        <div class="small">Bảng xếp hạng tổng điểm</div>
+        <h2 style="margin:6px 0 0;font-size:18px">Top 15 (tích lũy)</h2>
         <table>
-          <thead><tr><th>#</th><th>Tên</th><th>Điểm</th></tr></thead>
-          <tbody id="finalBody"></tbody>
+          <thead><tr><th>#</th><th>Tên</th><th>Tổng điểm</th></tr></thead>
+          <tbody id="lbBody"><tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="small">Top đúng nhanh nhất</div>
+        <h2 style="margin:6px 0 0;font-size:18px">Top 5 (đúng + nhanh) của câu vừa rồi</h2>
+        <table>
+          <thead><tr><th>#</th><th>Tên</th><th>Thời gian</th><th>+Điểm</th></tr></thead>
+          <tbody id="fastBody"><tr><td colspan="4" class="small">Chưa có dữ liệu.</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -381,6 +406,10 @@ app.get("/host", (req, res, next) => {
           return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]);
         });
       };
+      function fmtMs(ms){
+        if (ms == null) return "-";
+        return (ms/1000).toFixed(2) + "s";
+      }
 
       var dot = $("connDot");
       var text = $("connText");
@@ -410,8 +439,6 @@ app.get("/host", (req, res, next) => {
           if (!resp || !resp.ok) return alert((resp && resp.error) || "Không tạo được phòng");
           code = resp.code;
           $("roomCode").textContent = code;
-          $("finalWrap").style.display = "none";
-          $("finalBody").innerHTML = "";
           setButtons();
         });
       };
@@ -464,25 +491,31 @@ app.get("/host", (req, res, next) => {
 
       socket.on("question:end", function(p){
         var correctIndex = p.correctIndex;
-        var top5 = p.top5 || [];
 
-        $("lbBody").innerHTML = top5.map(function(x,i){
+        // Tổng điểm Top 15
+        var totalTop15 = p.totalTop15 || [];
+        $("lbBody").innerHTML = totalTop15.map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
         }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có người chơi.</td></tr>";
 
+        // Top 5 đúng nhanh nhất
+        var fastTop5 = p.fastTop5 || [];
+        $("fastBody").innerHTML = fastTop5.map(function(x,i){
+          return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + fmtMs(x.elapsedMs) + "</td><td>+" + (x.points || 0) + "</td></tr>";
+        }).join("") || "<tr><td colspan=\\"4\\" class=\\"small\\">Chưa có ai trả lời đúng.</td></tr>";
+
+        // highlight đáp án đúng (host xem)
         Array.prototype.forEach.call($("choices").querySelectorAll(".choice"), function(node, idx){
           if (idx === correctIndex) node.innerHTML += ' <span class="badge good">✔ đúng</span>';
         });
       });
 
       socket.on("game:end", function(p){
-        $("finalWrap").style.display = "block";
-        var top15 = p.top15 || [];
-        $("finalBody").innerHTML = top15.map(function(x,i){
+        var totalTop15 = p.totalTop15 || [];
+        $("lbBody").innerHTML = totalTop15.map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
         }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có dữ liệu.</td></tr>";
         alert("Kết thúc game! Tổng người chơi: " + p.totalPlayers);
-        setButtons();
       });
 
       setButtons();
@@ -534,20 +567,22 @@ app.get("/play", (_, res) => {
       </div>
     </div>
 
-    <div class="card" style="margin-top:16px">
-      <div class="small">Bảng xếp hạng</div>
-      <h2 style="margin:6px 0 0;font-size:18px">Top 5 (sau mỗi câu)</h2>
-      <table>
-        <thead><tr><th>#</th><th>Tên</th><th>Điểm</th></tr></thead>
-        <tbody id="lbBody"><tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr></tbody>
-      </table>
-
-      <div id="finalWrap" style="display:none;margin-top:14px">
-        <hr/>
-        <div class="small">Kết quả cuối (Top 15)</div>
+    <div class="grid" style="margin-top:16px">
+      <div class="card">
+        <div class="small">Bảng xếp hạng tổng điểm</div>
+        <h2 style="margin:6px 0 0;font-size:18px">Top 15 (tích lũy)</h2>
         <table>
-          <thead><tr><th>#</th><th>Tên</th><th>Điểm</th></tr></thead>
-          <tbody id="finalBody"></tbody>
+          <thead><tr><th>#</th><th>Tên</th><th>Tổng điểm</th></tr></thead>
+          <tbody id="lbBody"><tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="small">Top đúng nhanh nhất</div>
+        <h2 style="margin:6px 0 0;font-size:18px">Top 5 (đúng + nhanh) của câu vừa rồi</h2>
+        <table>
+          <thead><tr><th>#</th><th>Tên</th><th>Thời gian</th><th>+Điểm</th></tr></thead>
+          <tbody id="fastBody"><tr><td colspan="4" class="small">Chưa có dữ liệu.</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -560,6 +595,10 @@ app.get("/play", (_, res) => {
           return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]);
         });
       };
+      function fmtMs(ms){
+        if (ms == null) return "-";
+        return (ms/1000).toFixed(2) + "s";
+      }
 
       var dot = $("connDot");
       var text = $("connText");
@@ -602,8 +641,6 @@ app.get("/play", (_, res) => {
           joined = true;
           roomCode = code;
           $("joinStatus").innerHTML = '<span class="good">✔ Đã vào phòng ' + esc(code) + '</span>';
-          $("finalWrap").style.display = "none";
-          $("finalBody").innerHTML = "";
         });
       };
 
@@ -647,25 +684,25 @@ app.get("/play", (_, res) => {
         if (!joined) return;
         clearTimer();
 
-        var correctIndex = p.correctIndex;
-        var top5 = p.top5 || [];
-
-        Array.prototype.forEach.call($("choices").querySelectorAll("button.choice"), function(b, idx){
-          if (idx === correctIndex) b.innerHTML += ' <span class="badge good">✔ đúng</span>';
-        });
-
-        $("lbBody").innerHTML = top5.map(function(x,i){
+        // Tổng điểm Top 15
+        var totalTop15 = p.totalTop15 || [];
+        $("lbBody").innerHTML = totalTop15.map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
-        }).join("") || '<tr><td colspan="3" class="small">Chưa có người chơi.</td></tr>';
+        }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có người chơi.</td></tr>";
+
+        // Top 5 đúng nhanh nhất
+        var fastTop5 = p.fastTop5 || [];
+        $("fastBody").innerHTML = fastTop5.map(function(x,i){
+          return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + fmtMs(x.elapsedMs) + "</td><td>+" + (x.points || 0) + "</td></tr>";
+        }).join("") || "<tr><td colspan=\\"4\\" class=\\"small\\">Chưa có ai trả lời đúng.</td></tr>";
       });
 
       socket.on("game:end", function(p){
         if (!joined) return;
-        $("finalWrap").style.display = "block";
-        var top15 = p.top15 || [];
-        $("finalBody").innerHTML = top15.map(function(x,i){
+        var totalTop15 = p.totalTop15 || [];
+        $("lbBody").innerHTML = totalTop15.map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
-        }).join("") || '<tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr>';
+        }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có dữ liệu.</td></tr>";
         alert("Kết thúc game! Tổng người chơi: " + p.totalPlayers);
       });
     </script>
@@ -679,7 +716,7 @@ function socketIsHost(socket) {
 }
 
 io.on("connection", (socket) => {
-  // --- Host events: phải có host cookie hợp lệ ---
+  // --- Host events (cần host cookie) ---
   socket.on("host:createRoom", (_, ack) => {
     if (!socketIsHost(socket)) return ack && ack({ ok: false, error: "Bạn cần HOST KEY để dùng chức năng Host." });
 
@@ -790,9 +827,11 @@ io.on("connection", (socket) => {
 
     const pts = computePoints({ correct, elapsedMs, limitSec: q.timeLimitSec });
     p.score += pts;
-    p.lastAnswer = { qIndex: room.qIndex, choiceIndex: selected, elapsedMs, correct };
 
-    const leaderboard = getLeaderboard(room);
+    // Lưu để tính Top đúng nhanh nhất
+    p.lastAnswer = { qIndex: room.qIndex, choiceIndex: selected, elapsedMs, correct, points: pts };
+
+    const leaderboard = getTotalLeaderboard(room);
     const rank = leaderboard.findIndex((x) => x.socketId === socket.id) + 1;
 
     ack && ack({ ok: true, correct, points: pts, totalScore: p.score, rank });
@@ -822,5 +861,6 @@ io.on("connection", (socket) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () => console.log("Realtime quiz running on port", PORT));
+
 
 
