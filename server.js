@@ -28,7 +28,8 @@ function hasHostCookie(req) {
 
 function setHostCookie(req, res) {
   const isHttps =
-    req.secure || (req.headers["x-forwarded-proto"] || "").toString().includes("https");
+    req.secure ||
+    (req.headers["x-forwarded-proto"] || "").toString().includes("https");
 
   const parts = [
     `${HOST_COOKIE_NAME}=${encodeURIComponent(hostSig())}`,
@@ -43,7 +44,8 @@ function setHostCookie(req, res) {
 
 function clearHostCookie(req, res) {
   const isHttps =
-    req.secure || (req.headers["x-forwarded-proto"] || "").toString().includes("https");
+    req.secure ||
+    (req.headers["x-forwarded-proto"] || "").toString().includes("https");
 
   const parts = [
     `${HOST_COOKIE_NAME}=`,
@@ -111,12 +113,6 @@ function makeCode(len = 6) {
   return out;
 }
 
-/* room:
-{
-  code, hostId, started, ended, qIndex, qStartAtMs, timer,
-  players: Map(socketId => { name, score, lastAnswer })
-}
-*/
 const rooms = new Map();
 
 function publicState(room) {
@@ -150,7 +146,7 @@ function getTotalLeaderboard(room) {
   return list;
 }
 
-// Top 5 "ĐÚNG & NHANH" của câu vừa kết thúc (KHÔNG lọc 7 giây; 7 giây chỉ là thời gian popup hiển thị)
+// Top 5 đúng & nhanh của câu vừa xong (7s chỉ là thời gian HIỂN THỊ popup)
 function getFastCorrectTop5(room) {
   const arr = [];
   for (const p of room.players.values()) {
@@ -163,12 +159,7 @@ function getFastCorrectTop5(room) {
       });
     }
   }
-  arr.sort(
-    (x, y) =>
-      x.elapsedMs - y.elapsedMs ||
-      y.points - x.points ||
-      x.name.localeCompare(y.name)
-  );
+  arr.sort((x, y) => x.elapsedMs - y.elapsedMs || y.points - x.points || x.name.localeCompare(y.name));
   return arr.slice(0, 5);
 }
 
@@ -199,11 +190,9 @@ function endQuestion(room) {
   }
 
   const q = QUIZ.questions[room.qIndex];
-
   const totalTop15 = getTotalLeaderboard(room).slice(0, 15);
   const fastTop5 = getFastCorrectTop5(room);
 
-  // KẾT THÚC CÂU -> gửi bảng tổng điểm + popup Top 5 (hiện 7s)
   io.to(room.code).emit("question:end", {
     qIndex: room.qIndex,
     correctIndex: q.correctIndex,
@@ -229,7 +218,7 @@ function endGame(room) {
 }
 
 /* ================== HTML LAYOUT ==================
-   QUAN TRỌNG: load /socket.io/socket.io.js TRƯỚC inline script
+   Lưu ý: load socket.io.js TRƯỚC inline scripts
 */
 function layout(title, body) {
   return `<!doctype html>
@@ -263,9 +252,48 @@ function layout(title, body) {
     hr{border:0;border-top:1px solid var(--line);margin:14px 0}
     .choices{display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px}
     @media(min-width:720px){.choices{grid-template-columns:1fr 1fr}}
-    .choice{padding:12px;border-radius:14px;border:1px solid var(--line);background:rgba(0,0,0,.14);cursor:pointer;text-align:left}
-    .choice:hover{background:rgba(0,0,0,.22)}
-    .choice[disabled]{opacity:.6;cursor:not-allowed}
+
+    /* ====== ĐÁP ÁN: TƯƠNG PHẢN CAO (dễ nhìn) ====== */
+    .choice{
+      display:flex;
+      align-items:center;
+      gap:12px;
+      padding:14px 14px;
+      border-radius:14px;
+      border:1px solid rgba(231,236,255,.22);
+      background:rgba(0,0,0,.32);
+      color:var(--text);
+      cursor:pointer;
+      text-align:left;
+    }
+    .choice:hover{
+      background:rgba(0,0,0,.42);
+      border-color: rgba(231,236,255,.38);
+    }
+    .choice[disabled]{
+      opacity:.78;
+      cursor:not-allowed;
+    }
+    .choice .opt{
+      width:34px;
+      height:34px;
+      border-radius:10px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-weight:900;
+      letter-spacing:.5px;
+      background:rgba(231,236,255,.95);
+      color:#0b1020;
+      border:1px solid rgba(0,0,0,.18);
+      flex:0 0 auto;
+    }
+    .choice .txt{
+      flex:1;
+      font-weight:700;
+      line-height:1.25;
+    }
+
     .badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:12px;border:1px solid var(--line);background:rgba(0,0,0,.14);color:var(--muted)}
     .good{color:var(--good)} .bad{color:var(--bad)}
     table{width:100%;border-collapse:collapse;margin-top:10px}
@@ -318,6 +346,8 @@ app.get("/host-login", (req, res) => {
           <a class="btn" href="/play">Tôi là người chơi</a>
         </div>
       </form>
+      <hr/>
+      <p class="small">Có thể vào nhanh: <b>/host?key=YOUR_KEY</b></p>
     </div>
   `));
 });
@@ -345,7 +375,15 @@ app.get("/host-logout", (req, res) => {
   return res.redirect("/play");
 });
 
-app.get("/host", requireHost, (req, res) => {
+// Cho phép /host?key=... để set cookie nhanh
+app.get("/host", (req, res, next) => {
+  const k = String(req.query.key || "").trim();
+  if (k && k === HOST_KEY) {
+    setHostCookie(req, res);
+    return res.redirect("/host");
+  }
+  return next();
+}, requireHost, (req, res) => {
   res.send(layout("Host", `
     <div class="header">
       <h1>Host (MC)</h1>
@@ -519,8 +557,13 @@ app.get("/host", requireHost, (req, res) => {
         $("qText").textContent = q.text;
         $("qTime").textContent = String(q.timeLimitSec) + "s";
         $("qAnswered").textContent = "0";
+
         $("choices").innerHTML = q.choices.map(function(c,i){
-          return "<div class=\\"choice\\"><b>" + String.fromCharCode(65+i) + ")</b> " + esc(c) + "</div>";
+          var letter = String.fromCharCode(65+i);
+          return '<div class="choice">' +
+                   '<span class="opt">' + letter + '</span>' +
+                   '<span class="txt">' + esc(c) + '</span>' +
+                 '</div>';
         }).join("");
       });
 
@@ -534,10 +577,14 @@ app.get("/host", requireHost, (req, res) => {
         // Popup Top 5 (7s)
         showPopup(p.fastTop5 || [], p.popupShowMs || 7000);
 
-        // Highlight đáp án đúng (host xem)
+        // Highlight đáp án đúng
         var correctIndex = p.correctIndex;
-        Array.prototype.forEach.call($("choices").querySelectorAll(".choice"), function(node, idx){
-          if (idx === correctIndex) node.innerHTML += ' <span class="badge good">✔ đúng</span>';
+        var nodes = $("choices").querySelectorAll(".choice");
+        nodes.forEach(function(node, idx){
+          if (idx === correctIndex) {
+            var txt = node.querySelector(".txt");
+            if (txt) txt.innerHTML = txt.innerHTML + ' <span class="badge good">✔ đúng</span>';
+          }
         });
       });
 
@@ -703,8 +750,13 @@ app.get("/play", (_, res) => {
         $("qText").textContent = q.text;
         setCountdown(q.startedAtMs, q.timeLimitSec);
 
+        // ====== ĐÁP ÁN TƯƠNG PHẢN CAO ======
         $("choices").innerHTML = q.choices.map(function(c,i){
-          return '<button class="choice" data-i="' + i + '"><b>' + String.fromCharCode(65+i) + ')</b> ' + esc(c) + '</button>';
+          var letter = String.fromCharCode(65+i);
+          return '<button class="choice" data-i="' + i + '">' +
+                   '<span class="opt">' + letter + '</span>' +
+                   '<span class="txt">' + esc(c) + '</span>' +
+                 '</button>';
         }).join("");
 
         Array.prototype.forEach.call($("choices").querySelectorAll("button.choice"), function(btn){
@@ -713,6 +765,7 @@ app.get("/play", (_, res) => {
             myAnswered = true;
 
             var choiceIndex = Number(btn.getAttribute("data-i"));
+
             Array.prototype.forEach.call($("choices").querySelectorAll("button.choice"), function(b){
               b.setAttribute("disabled","disabled");
             });
@@ -765,6 +818,7 @@ function socketIsHost(socket) {
 }
 
 io.on("connection", (socket) => {
+  /* ---------- HOST ---------- */
   socket.on("host:createRoom", (_, ack) => {
     if (!socketIsHost(socket)) return ack && ack({ ok: false, error: "Bạn cần HOST KEY để dùng chức năng Host." });
 
@@ -782,6 +836,7 @@ io.on("connection", (socket) => {
     };
     rooms.set(code, room);
     socket.join(code);
+
     ack && ack({ ok: true, code });
     broadcast(room);
   });
@@ -820,7 +875,6 @@ io.on("connection", (socket) => {
     if (room.hostId !== socket.id) return ack && ack({ ok: false, error: "Bạn không phải Host" });
     if (!room.started) return ack && ack({ ok: false, error: "Chưa bắt đầu" });
 
-    // kết thúc câu hiện tại (nếu chưa)
     endQuestion(room);
 
     room.qIndex += 1;
@@ -833,6 +887,7 @@ io.on("connection", (socket) => {
     ack && ack({ ok: true, ended: false });
   });
 
+  /* ---------- PLAYER ---------- */
   socket.on("player:join", ({ code, name }, ack) => {
     const room = rooms.get(code);
     if (!room) return ack && ack({ ok: false, error: "Mã phòng không đúng" });
@@ -848,10 +903,7 @@ io.on("connection", (socket) => {
 
     ack && ack({ ok: true });
 
-    // nếu game đang chạy, gửi luôn câu hiện tại cho người mới vào
     if (room.started && !room.ended) socket.emit("question:start", safeQuestionPayload(room));
-
-    // cập nhật state cho tất cả
     broadcast(room);
   });
 
@@ -909,9 +961,3 @@ io.on("connection", (socket) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () => console.log("Realtime quiz running on port", PORT));
-
-
-
-
-
-
