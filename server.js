@@ -3,7 +3,7 @@ const http = require("http");
 const crypto = require("crypto");
 const { Server } = require("socket.io");
 
-// ================== HOST KEY (BẮT BUỘC) ==================
+/* ================== HOST KEY ================== */
 const HOST_KEY = process.env.HOST_KEY || "CHANGE_ME_HOST_KEY";
 const HOST_COOKIE_NAME = "host_auth";
 
@@ -61,9 +61,9 @@ function requireHost(req, res, next) {
   return res.redirect("/host-login");
 }
 
-// ================== SỬA CÂU HỎI Ở ĐÂY ==================
+/* ================== QUIZ ================== */
 const QUIZ = {
-  title: "Mini Kahoot Realtime – Tổng điểm + Popup Top nhanh",
+  title: "Quiz Realtime – Tổng điểm + Popup Top 5",
   questions: [
     {
       text: "1) Thủ đô của Việt Nam là gì?",
@@ -86,8 +86,9 @@ const QUIZ = {
   ]
 };
 
-// Điểm: đúng + nhanh
 const MAX_POINTS = 1000;
+const POPUP_SHOW_MS = 7000;
+
 function computePoints({ correct, elapsedMs, limitSec }) {
   if (!correct) return 0;
   const limitMs = limitSec * 1000;
@@ -96,10 +97,7 @@ function computePoints({ correct, elapsedMs, limitSec }) {
   return Math.max(1, pts);
 }
 
-// ====== YÊU CẦU MỚI: CHỈ TÍNH TRONG 7 GIÂY, POPUP HIỆN 7 GIÂY ======
-const FAST_WINDOW_MS = 7000;      // chỉ lấy đáp án đúng trong 7s đầu
-const POPUP_SHOW_MS = 7000;       // popup hiển thị 7s rồi tắt
-
+/* ================== APP ================== */
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 
@@ -113,6 +111,12 @@ function makeCode(len = 6) {
   return out;
 }
 
+/* room:
+{
+  code, hostId, started, ended, qIndex, qStartAtMs, timer,
+  players: Map(socketId => { name, score, lastAnswer })
+}
+*/
 const rooms = new Map();
 
 function publicState(room) {
@@ -137,7 +141,6 @@ function safeQuestionPayload(room) {
   };
 }
 
-// ====== BẢNG TỔNG ĐIỂM (TOP 15) ======
 function getTotalLeaderboard(room) {
   const list = [];
   for (const [sid, p] of room.players.entries()) {
@@ -147,18 +150,12 @@ function getTotalLeaderboard(room) {
   return list;
 }
 
-// ====== TOP 5 ĐÚNG + NHANH NHẤT TRONG 7 GIÂY (CÂU VỪA RỒI) ======
+// Top 5 "ĐÚNG & NHANH" của câu vừa kết thúc (KHÔNG lọc 7 giây; 7 giây chỉ là thời gian popup hiển thị)
 function getFastCorrectTop5(room) {
   const arr = [];
   for (const p of room.players.values()) {
     const a = p.lastAnswer;
-    if (
-      a &&
-      a.qIndex === room.qIndex &&
-      a.correct &&
-      typeof a.elapsedMs === "number" &&
-      a.elapsedMs <= FAST_WINDOW_MS
-    ) {
+    if (a && a.qIndex === room.qIndex && a.correct) {
       arr.push({
         name: p.name,
         elapsedMs: a.elapsedMs,
@@ -166,8 +163,12 @@ function getFastCorrectTop5(room) {
       });
     }
   }
-  // ưu tiên nhanh nhất, nếu bằng nhau thì điểm cao hơn, rồi theo tên
-  arr.sort((x, y) => x.elapsedMs - y.elapsedMs || y.points - x.points || x.name.localeCompare(y.name));
+  arr.sort(
+    (x, y) =>
+      x.elapsedMs - y.elapsedMs ||
+      y.points - x.points ||
+      x.name.localeCompare(y.name)
+  );
   return arr.slice(0, 5);
 }
 
@@ -177,18 +178,21 @@ function broadcast(room) {
 
 function startQuestion(room) {
   if (room.timer) clearTimeout(room.timer);
-  room.qStartAtMs = Date.now();
 
+  room.qStartAtMs = Date.now();
   for (const p of room.players.values()) p.lastAnswer = null;
 
   io.to(room.code).emit("question:start", safeQuestionPayload(room));
 
   const q = QUIZ.questions[room.qIndex];
   room.timer = setTimeout(() => endQuestion(room), q.timeLimitSec * 1000);
+
+  broadcast(room);
 }
 
 function endQuestion(room) {
   if (room.ended) return;
+
   if (room.timer) {
     clearTimeout(room.timer);
     room.timer = null;
@@ -199,11 +203,12 @@ function endQuestion(room) {
   const totalTop15 = getTotalLeaderboard(room).slice(0, 15);
   const fastTop5 = getFastCorrectTop5(room);
 
+  // KẾT THÚC CÂU -> gửi bảng tổng điểm + popup Top 5 (hiện 7s)
   io.to(room.code).emit("question:end", {
     qIndex: room.qIndex,
     correctIndex: q.correctIndex,
-    totalTop15,     // bảng tổng điểm
-    fastTop5,       // top đúng nhanh trong 7s
+    totalTop15,
+    fastTop5,
     popupShowMs: POPUP_SHOW_MS
   });
 
@@ -214,17 +219,18 @@ function endGame(room) {
   room.ended = true;
   if (room.timer) clearTimeout(room.timer);
 
-  const totalTop15 = getTotalLeaderboard(room).slice(0, 15);
+  const total = getTotalLeaderboard(room);
   io.to(room.code).emit("game:end", {
-    totalTop15,
-    totalPlayers: getTotalLeaderboard(room).length
+    totalTop15: total.slice(0, 15),
+    totalPlayers: total.length
   });
 
   broadcast(room);
 }
 
-// ================== HTML LAYOUT ==================
-// QUAN TRỌNG: load socket.io.js TRƯỚC body content để tránh "io is not defined"
+/* ================== HTML LAYOUT ==================
+   QUAN TRỌNG: load /socket.io/socket.io.js TRƯỚC inline script
+*/
 function layout(title, body) {
   return `<!doctype html>
 <html lang="vi">
@@ -278,6 +284,7 @@ function layout(title, body) {
 </html>`;
 }
 
+/* ================== ROUTES ================== */
 app.get("/health", (_, res) => res.json({ ok: true }));
 
 app.get("/", (_, res) => {
@@ -286,7 +293,9 @@ app.get("/", (_, res) => {
       <div class="header">
         <h1>${QUIZ.title}</h1>
       </div>
-      <p class="small" style="margin:10px 0 0">Người chơi vào <b>/play</b>. Host cần key vào <b>/host</b>.</p>
+      <p class="small" style="margin:10px 0 0">
+        Người chơi vào <b>/play</b>. Host cần key vào <b>/host</b>.
+      </p>
       <hr/>
       <div class="row">
         <a class="btn" href="/play">Người chơi</a>
@@ -296,7 +305,6 @@ app.get("/", (_, res) => {
   `));
 });
 
-// ---------- HOST LOGIN ----------
 app.get("/host-login", (req, res) => {
   res.send(layout("Nhập Host Key", `
     <div class="card">
@@ -310,8 +318,6 @@ app.get("/host-login", (req, res) => {
           <a class="btn" href="/play">Tôi là người chơi</a>
         </div>
       </form>
-      <hr/>
-      <p class="small">Bạn cũng có thể vào nhanh: <b>/host?key=YOUR_KEY</b></p>
     </div>
   `));
 });
@@ -339,15 +345,7 @@ app.get("/host-logout", (req, res) => {
   return res.redirect("/play");
 });
 
-// ---------- HOST ----------
-app.get("/host", (req, res, next) => {
-  const k = String(req.query.key || "").trim();
-  if (k && k === HOST_KEY) {
-    setHostCookie(req, res);
-    return res.redirect("/host");
-  }
-  return next();
-}, requireHost, (req, res) => {
+app.get("/host", requireHost, (req, res) => {
   res.send(layout("Host", `
     <div class="header">
       <h1>Host (MC)</h1>
@@ -375,10 +373,10 @@ app.get("/host", (req, res, next) => {
         <div class="row">
           <button id="btnCreate" class="btn" disabled>Tạo phòng</button>
           <button id="btnStart" class="btn" disabled>Bắt đầu</button>
-          <button id="btnReveal" class="btn" disabled>Hiện kết quả</button>
+          <button id="btnReveal" class="btn" disabled>Kết thúc câu</button>
           <button id="btnNext" class="btn" disabled>Câu tiếp theo</button>
         </div>
-        <p class="small" style="margin:10px 0 0">Sau mỗi câu: popup Top 5 đúng + nhanh trong 7s sẽ hiện 7s rồi tự tắt.</p>
+        <p class="small" style="margin:10px 0 0">Sau khi kết thúc mỗi câu: popup Top 5 đúng & nhanh sẽ hiện 7s rồi tự tắt.</p>
       </div>
 
       <div class="card">
@@ -401,11 +399,11 @@ app.get("/host", (req, res, next) => {
       </table>
     </div>
 
-    <!-- POPUP TOP 5 (ẩn mặc định) -->
+    <!-- POPUP TOP 5 -->
     <div id="fastPopup" class="overlay">
       <div class="modal card">
         <div class="header">
-          <h1 style="font-size:18px;margin:0">Top 5 đúng & nhanh (trong 7 giây)</h1>
+          <h1 style="font-size:18px;margin:0">Top 5 đúng & nhanh (câu vừa xong)</h1>
           <span class="pill"><span class="small">Tự tắt sau 7 giây</span></span>
         </div>
         <table>
@@ -438,16 +436,14 @@ app.get("/host", (req, res, next) => {
 
       var code = null;
       var state = null;
-      var popupTimer = null;
 
-      function hidePopup(){
-        $("fastPopup").style.display = "none";
-      }
+      var popupTimer = null;
+      function hidePopup(){ $("fastPopup").style.display = "none"; }
       function showPopup(list, showMs){
         if (popupTimer) clearTimeout(popupTimer);
 
         if (!list || !list.length){
-          $("fastBody").innerHTML = '<tr><td colspan="4" class="small">Không có ai trả lời đúng trong 7 giây.</td></tr>';
+          $("fastBody").innerHTML = '<tr><td colspan="4" class="small">Không có ai trả lời đúng.</td></tr>';
         } else {
           $("fastBody").innerHTML = list.map(function(x,i){
             return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + fmtMs(x.elapsedMs) + "</td><td>+" + (x.points || 0) + "</td></tr>";
@@ -470,11 +466,11 @@ app.get("/host", (req, res, next) => {
       socket.on("connect_error", function(){ setConn(false,"Lỗi kết nối"); setButtons(); });
 
       $("btnCreate").onclick = function(){
-        if (!socket.connected) return alert("Chưa kết nối realtime. Hãy tải lại trang.");
         socket.emit("host:createRoom", {}, function(resp){
           if (!resp || !resp.ok) return alert((resp && resp.error) || "Không tạo được phòng");
           code = resp.code;
           $("roomCode").textContent = code;
+          hidePopup();
           setButtons();
         });
       };
@@ -482,6 +478,7 @@ app.get("/host", (req, res, next) => {
       $("btnStart").onclick = function(){
         socket.emit("host:start", { code: code }, function(resp){
           if (!resp || !resp.ok) return alert((resp && resp.error) || "Không thể bắt đầu");
+          hidePopup();
           setButtons();
         });
       };
@@ -495,6 +492,7 @@ app.get("/host", (req, res, next) => {
       $("btnNext").onclick = function(){
         socket.emit("host:next", { code: code }, function(resp){
           if (!resp || !resp.ok) return alert((resp && resp.error) || "Lỗi");
+          hidePopup();
           setButtons();
         });
       };
@@ -527,16 +525,16 @@ app.get("/host", (req, res, next) => {
       });
 
       socket.on("question:end", function(p){
-        // Cập nhật bảng tổng điểm Top 15
+        // Update bảng tổng điểm
         var totalTop15 = p.totalTop15 || [];
         $("lbBody").innerHTML = totalTop15.map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
-        }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có người chơi.</td></tr>";
+        }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có dữ liệu.</td></tr>";
 
-        // Popup Top 5 đúng nhanh (trong 7s), tự tắt sau 7s
+        // Popup Top 5 (7s)
         showPopup(p.fastTop5 || [], p.popupShowMs || 7000);
 
-        // highlight đáp án đúng (host xem)
+        // Highlight đáp án đúng (host xem)
         var correctIndex = p.correctIndex;
         Array.prototype.forEach.call($("choices").querySelectorAll(".choice"), function(node, idx){
           if (idx === correctIndex) node.innerHTML += ' <span class="badge good">✔ đúng</span>';
@@ -556,7 +554,6 @@ app.get("/host", (req, res, next) => {
   `));
 });
 
-// ---------- PLAYER ----------
 app.get("/play", (_, res) => {
   res.send(layout("Người chơi", `
     <div class="header">
@@ -609,11 +606,11 @@ app.get("/play", (_, res) => {
       </table>
     </div>
 
-    <!-- POPUP TOP 5 (ẩn mặc định) -->
+    <!-- POPUP TOP 5 -->
     <div id="fastPopup" class="overlay">
       <div class="modal card">
         <div class="header">
-          <h1 style="font-size:18px;margin:0">Top 5 đúng & nhanh (trong 7 giây)</h1>
+          <h1 style="font-size:18px;margin:0">Top 5 đúng & nhanh (câu vừa xong)</h1>
           <span class="pill"><span class="small">Tự tắt sau 7 giây</span></span>
         </div>
         <table>
@@ -658,7 +655,7 @@ app.get("/play", (_, res) => {
         if (popupTimer) clearTimeout(popupTimer);
 
         if (!list || !list.length){
-          $("fastBody").innerHTML = '<tr><td colspan="4" class="small">Không có ai trả lời đúng trong 7 giây.</td></tr>';
+          $("fastBody").innerHTML = '<tr><td colspan="4" class="small">Không có ai trả lời đúng.</td></tr>';
         } else {
           $("fastBody").innerHTML = list.map(function(x,i){
             return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + fmtMs(x.elapsedMs) + "</td><td>+" + (x.points || 0) + "</td></tr>";
@@ -700,6 +697,7 @@ app.get("/play", (_, res) => {
       socket.on("question:start", function(q){
         if (!joined) return;
         hidePopup();
+
         myAnswered = false;
         $("feedback").textContent = "";
         $("qText").textContent = q.text;
@@ -738,13 +736,13 @@ app.get("/play", (_, res) => {
         if (!joined) return;
         clearTimer();
 
-        // cập nhật bảng tổng điểm Top 15
+        // Update bảng tổng điểm
         var totalTop15 = p.totalTop15 || [];
         $("lbBody").innerHTML = totalTop15.map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
-        }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có người chơi.</td></tr>";
+        }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có dữ liệu.</td></tr>";
 
-        // popup Top 5 đúng nhanh (trong 7s) -> hiện 7s rồi tắt
+        // Popup Top 5 (7s)
         showPopup(p.fastTop5 || [], p.popupShowMs || 7000);
       });
 
@@ -760,14 +758,13 @@ app.get("/play", (_, res) => {
   `));
 });
 
-// ================== SOCKET EVENTS (CHẶN HOST EVENT NẾU KHÔNG CÓ KEY) ==================
+/* ================== SOCKET.IO (Host key chặn host events) ================== */
 function socketIsHost(socket) {
   const cookies = parseCookies(socket.request.headers.cookie || "");
   return cookies[HOST_COOKIE_NAME] === hostSig();
 }
 
 io.on("connection", (socket) => {
-  // --- Host events (cần host cookie) ---
   socket.on("host:createRoom", (_, ack) => {
     if (!socketIsHost(socket)) return ack && ack({ ok: false, error: "Bạn cần HOST KEY để dùng chức năng Host." });
 
@@ -785,7 +782,7 @@ io.on("connection", (socket) => {
     };
     rooms.set(code, room);
     socket.join(code);
-    ack && ack({ ok: true, code, quizTitle: QUIZ.title, total: QUIZ.questions.length });
+    ack && ack({ ok: true, code });
     broadcast(room);
   });
 
@@ -800,9 +797,7 @@ io.on("connection", (socket) => {
     room.started = true;
     room.ended = false;
     room.qIndex = 0;
-
     startQuestion(room);
-    broadcast(room);
     ack && ack({ ok: true });
   });
 
@@ -812,6 +807,7 @@ io.on("connection", (socket) => {
     const room = rooms.get(code);
     if (!room) return ack && ack({ ok: false, error: "Không tìm thấy phòng" });
     if (room.hostId !== socket.id) return ack && ack({ ok: false, error: "Bạn không phải Host" });
+
     endQuestion(room);
     ack && ack({ ok: true });
   });
@@ -824,20 +820,19 @@ io.on("connection", (socket) => {
     if (room.hostId !== socket.id) return ack && ack({ ok: false, error: "Bạn không phải Host" });
     if (!room.started) return ack && ack({ ok: false, error: "Chưa bắt đầu" });
 
+    // kết thúc câu hiện tại (nếu chưa)
     endQuestion(room);
-    room.qIndex += 1;
 
+    room.qIndex += 1;
     if (room.qIndex >= QUIZ.questions.length) {
       endGame(room);
       return ack && ack({ ok: true, ended: true });
     }
 
     startQuestion(room);
-    broadcast(room);
     ack && ack({ ok: true, ended: false });
   });
 
-  // --- Player events ---
   socket.on("player:join", ({ code, name }, ack) => {
     const room = rooms.get(code);
     if (!room) return ack && ack({ ok: false, error: "Mã phòng không đúng" });
@@ -853,7 +848,10 @@ io.on("connection", (socket) => {
 
     ack && ack({ ok: true });
 
+    // nếu game đang chạy, gửi luôn câu hiện tại cho người mới vào
     if (room.started && !room.ended) socket.emit("question:start", safeQuestionPayload(room));
+
+    // cập nhật state cho tất cả
     broadcast(room);
   });
 
@@ -879,7 +877,6 @@ io.on("connection", (socket) => {
     const pts = computePoints({ correct, elapsedMs, limitSec: q.timeLimitSec });
     p.score += pts;
 
-    // Lưu để tính Top đúng nhanh (trong 7s)
     p.lastAnswer = { qIndex: room.qIndex, choiceIndex: selected, elapsedMs, correct, points: pts };
 
     const leaderboard = getTotalLeaderboard(room);
@@ -912,6 +909,7 @@ io.on("connection", (socket) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () => console.log("Realtime quiz running on port", PORT));
+
 
 
 
