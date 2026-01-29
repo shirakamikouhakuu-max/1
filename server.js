@@ -63,7 +63,7 @@ function requireHost(req, res, next) {
 
 // ================== SỬA CÂU HỎI Ở ĐÂY ==================
 const QUIZ = {
-  title: "Mini Kahoot Realtime – Tổng điểm + Top đúng nhanh",
+  title: "Mini Kahoot Realtime – Tổng điểm + Popup Top nhanh",
   questions: [
     {
       text: "1) Thủ đô của Việt Nam là gì?",
@@ -95,6 +95,10 @@ function computePoints({ correct, elapsedMs, limitSec }) {
   const pts = Math.round(MAX_POINTS * (1 - t));
   return Math.max(1, pts);
 }
+
+// ====== YÊU CẦU MỚI: CHỈ TÍNH TRONG 7 GIÂY, POPUP HIỆN 7 GIÂY ======
+const FAST_WINDOW_MS = 7000;      // chỉ lấy đáp án đúng trong 7s đầu
+const POPUP_SHOW_MS = 7000;       // popup hiển thị 7s rồi tắt
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
@@ -143,12 +147,18 @@ function getTotalLeaderboard(room) {
   return list;
 }
 
-// ====== TOP 5 ĐÚNG NHANH NHẤT (CÂU VỪA RỒI) ======
+// ====== TOP 5 ĐÚNG + NHANH NHẤT TRONG 7 GIÂY (CÂU VỪA RỒI) ======
 function getFastCorrectTop5(room) {
   const arr = [];
   for (const p of room.players.values()) {
     const a = p.lastAnswer;
-    if (a && a.qIndex === room.qIndex && a.correct) {
+    if (
+      a &&
+      a.qIndex === room.qIndex &&
+      a.correct &&
+      typeof a.elapsedMs === "number" &&
+      a.elapsedMs <= FAST_WINDOW_MS
+    ) {
       arr.push({
         name: p.name,
         elapsedMs: a.elapsedMs,
@@ -156,6 +166,7 @@ function getFastCorrectTop5(room) {
       });
     }
   }
+  // ưu tiên nhanh nhất, nếu bằng nhau thì điểm cao hơn, rồi theo tên
   arr.sort((x, y) => x.elapsedMs - y.elapsedMs || y.points - x.points || x.name.localeCompare(y.name));
   return arr.slice(0, 5);
 }
@@ -168,7 +179,6 @@ function startQuestion(room) {
   if (room.timer) clearTimeout(room.timer);
   room.qStartAtMs = Date.now();
 
-  // reset lastAnswer cho câu mới
   for (const p of room.players.values()) p.lastAnswer = null;
 
   io.to(room.code).emit("question:start", safeQuestionPayload(room));
@@ -193,7 +203,8 @@ function endQuestion(room) {
     qIndex: room.qIndex,
     correctIndex: q.correctIndex,
     totalTop15,     // bảng tổng điểm
-    fastTop5        // top đúng nhanh nhất của câu vừa rồi
+    fastTop5,       // top đúng nhanh trong 7s
+    popupShowMs: POPUP_SHOW_MS
   });
 
   broadcast(room);
@@ -204,7 +215,6 @@ function endGame(room) {
   if (room.timer) clearTimeout(room.timer);
 
   const totalTop15 = getTotalLeaderboard(room).slice(0, 15);
-
   io.to(room.code).emit("game:end", {
     totalTop15,
     totalPlayers: getTotalLeaderboard(room).length
@@ -255,6 +265,10 @@ function layout(title, body) {
     table{width:100%;border-collapse:collapse;margin-top:10px}
     th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left;font-size:14px}
     th{color:var(--muted);font-weight:800}
+
+    /* Popup */
+    .overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;padding:16px;z-index:9999}
+    .modal{max-width:720px;width:100%}
   </style>
 </head>
 <body>
@@ -364,7 +378,7 @@ app.get("/host", (req, res, next) => {
           <button id="btnReveal" class="btn" disabled>Hiện kết quả</button>
           <button id="btnNext" class="btn" disabled>Câu tiếp theo</button>
         </div>
-        <p class="small" style="margin:10px 0 0">Bảng tổng điểm (Top 15) cập nhật sau mỗi câu. Dưới đó là Top 5 đúng nhanh nhất của câu vừa rồi.</p>
+        <p class="small" style="margin:10px 0 0">Sau mỗi câu: popup Top 5 đúng + nhanh trong 7s sẽ hiện 7s rồi tự tắt.</p>
       </div>
 
       <div class="card">
@@ -378,22 +392,25 @@ app.get("/host", (req, res, next) => {
       </div>
     </div>
 
-    <div class="grid" style="margin-top:16px">
-      <div class="card">
-        <div class="small">Bảng xếp hạng tổng điểm</div>
-        <h2 style="margin:6px 0 0;font-size:18px">Top 15 (tích lũy)</h2>
-        <table>
-          <thead><tr><th>#</th><th>Tên</th><th>Tổng điểm</th></tr></thead>
-          <tbody id="lbBody"><tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr></tbody>
-        </table>
-      </div>
+    <div class="card" style="margin-top:16px">
+      <div class="small">Bảng xếp hạng tổng điểm</div>
+      <h2 style="margin:6px 0 0;font-size:18px">Top 15 (tích lũy)</h2>
+      <table>
+        <thead><tr><th>#</th><th>Tên</th><th>Tổng điểm</th></tr></thead>
+        <tbody id="lbBody"><tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr></tbody>
+      </table>
+    </div>
 
-      <div class="card">
-        <div class="small">Top đúng nhanh nhất</div>
-        <h2 style="margin:6px 0 0;font-size:18px">Top 5 (đúng + nhanh) của câu vừa rồi</h2>
+    <!-- POPUP TOP 5 (ẩn mặc định) -->
+    <div id="fastPopup" class="overlay">
+      <div class="modal card">
+        <div class="header">
+          <h1 style="font-size:18px;margin:0">Top 5 đúng & nhanh (trong 7 giây)</h1>
+          <span class="pill"><span class="small">Tự tắt sau 7 giây</span></span>
+        </div>
         <table>
           <thead><tr><th>#</th><th>Tên</th><th>Thời gian</th><th>+Điểm</th></tr></thead>
-          <tbody id="fastBody"><tr><td colspan="4" class="small">Chưa có dữ liệu.</td></tr></tbody>
+          <tbody id="fastBody"></tbody>
         </table>
       </div>
     </div>
@@ -421,6 +438,25 @@ app.get("/host", (req, res, next) => {
 
       var code = null;
       var state = null;
+      var popupTimer = null;
+
+      function hidePopup(){
+        $("fastPopup").style.display = "none";
+      }
+      function showPopup(list, showMs){
+        if (popupTimer) clearTimeout(popupTimer);
+
+        if (!list || !list.length){
+          $("fastBody").innerHTML = '<tr><td colspan="4" class="small">Không có ai trả lời đúng trong 7 giây.</td></tr>';
+        } else {
+          $("fastBody").innerHTML = list.map(function(x,i){
+            return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + fmtMs(x.elapsedMs) + "</td><td>+" + (x.points || 0) + "</td></tr>";
+          }).join("");
+        }
+
+        $("fastPopup").style.display = "flex";
+        popupTimer = setTimeout(hidePopup, showMs || 7000);
+      }
 
       function setButtons(){
         $("btnCreate").disabled = !socket.connected;
@@ -481,6 +517,7 @@ app.get("/host", (req, res, next) => {
       });
 
       socket.on("question:start", function(q){
+        hidePopup();
         $("qText").textContent = q.text;
         $("qTime").textContent = String(q.timeLimitSec) + "s";
         $("qAnswered").textContent = "0";
@@ -490,21 +527,17 @@ app.get("/host", (req, res, next) => {
       });
 
       socket.on("question:end", function(p){
-        var correctIndex = p.correctIndex;
-
-        // Tổng điểm Top 15
+        // Cập nhật bảng tổng điểm Top 15
         var totalTop15 = p.totalTop15 || [];
         $("lbBody").innerHTML = totalTop15.map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
         }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có người chơi.</td></tr>";
 
-        // Top 5 đúng nhanh nhất
-        var fastTop5 = p.fastTop5 || [];
-        $("fastBody").innerHTML = fastTop5.map(function(x,i){
-          return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + fmtMs(x.elapsedMs) + "</td><td>+" + (x.points || 0) + "</td></tr>";
-        }).join("") || "<tr><td colspan=\\"4\\" class=\\"small\\">Chưa có ai trả lời đúng.</td></tr>";
+        // Popup Top 5 đúng nhanh (trong 7s), tự tắt sau 7s
+        showPopup(p.fastTop5 || [], p.popupShowMs || 7000);
 
         // highlight đáp án đúng (host xem)
+        var correctIndex = p.correctIndex;
         Array.prototype.forEach.call($("choices").querySelectorAll(".choice"), function(node, idx){
           if (idx === correctIndex) node.innerHTML += ' <span class="badge good">✔ đúng</span>';
         });
@@ -567,22 +600,25 @@ app.get("/play", (_, res) => {
       </div>
     </div>
 
-    <div class="grid" style="margin-top:16px">
-      <div class="card">
-        <div class="small">Bảng xếp hạng tổng điểm</div>
-        <h2 style="margin:6px 0 0;font-size:18px">Top 15 (tích lũy)</h2>
-        <table>
-          <thead><tr><th>#</th><th>Tên</th><th>Tổng điểm</th></tr></thead>
-          <tbody id="lbBody"><tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr></tbody>
-        </table>
-      </div>
+    <div class="card" style="margin-top:16px">
+      <div class="small">Bảng xếp hạng tổng điểm</div>
+      <h2 style="margin:6px 0 0;font-size:18px">Top 15 (tích lũy)</h2>
+      <table>
+        <thead><tr><th>#</th><th>Tên</th><th>Tổng điểm</th></tr></thead>
+        <tbody id="lbBody"><tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr></tbody>
+      </table>
+    </div>
 
-      <div class="card">
-        <div class="small">Top đúng nhanh nhất</div>
-        <h2 style="margin:6px 0 0;font-size:18px">Top 5 (đúng + nhanh) của câu vừa rồi</h2>
+    <!-- POPUP TOP 5 (ẩn mặc định) -->
+    <div id="fastPopup" class="overlay">
+      <div class="modal card">
+        <div class="header">
+          <h1 style="font-size:18px;margin:0">Top 5 đúng & nhanh (trong 7 giây)</h1>
+          <span class="pill"><span class="small">Tự tắt sau 7 giây</span></span>
+        </div>
         <table>
           <thead><tr><th>#</th><th>Tên</th><th>Thời gian</th><th>+Điểm</th></tr></thead>
-          <tbody id="fastBody"><tr><td colspan="4" class="small">Chưa có dữ liệu.</td></tr></tbody>
+          <tbody id="fastBody"></tbody>
         </table>
       </div>
     </div>
@@ -616,6 +652,23 @@ app.get("/play", (_, res) => {
       var timer = null;
       var myAnswered = false;
 
+      var popupTimer = null;
+      function hidePopup(){ $("fastPopup").style.display = "none"; }
+      function showPopup(list, showMs){
+        if (popupTimer) clearTimeout(popupTimer);
+
+        if (!list || !list.length){
+          $("fastBody").innerHTML = '<tr><td colspan="4" class="small">Không có ai trả lời đúng trong 7 giây.</td></tr>';
+        } else {
+          $("fastBody").innerHTML = list.map(function(x,i){
+            return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + fmtMs(x.elapsedMs) + "</td><td>+" + (x.points || 0) + "</td></tr>";
+          }).join("");
+        }
+
+        $("fastPopup").style.display = "flex";
+        popupTimer = setTimeout(hidePopup, showMs || 7000);
+      }
+
       function clearTimer(){ if (timer) clearInterval(timer); timer = null; }
       function setCountdown(startedAtMs, timeLimitSec){
         clearTimer();
@@ -646,6 +699,7 @@ app.get("/play", (_, res) => {
 
       socket.on("question:start", function(q){
         if (!joined) return;
+        hidePopup();
         myAnswered = false;
         $("feedback").textContent = "";
         $("qText").textContent = q.text;
@@ -684,17 +738,14 @@ app.get("/play", (_, res) => {
         if (!joined) return;
         clearTimer();
 
-        // Tổng điểm Top 15
+        // cập nhật bảng tổng điểm Top 15
         var totalTop15 = p.totalTop15 || [];
         $("lbBody").innerHTML = totalTop15.map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
         }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có người chơi.</td></tr>";
 
-        // Top 5 đúng nhanh nhất
-        var fastTop5 = p.fastTop5 || [];
-        $("fastBody").innerHTML = fastTop5.map(function(x,i){
-          return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + fmtMs(x.elapsedMs) + "</td><td>+" + (x.points || 0) + "</td></tr>";
-        }).join("") || "<tr><td colspan=\\"4\\" class=\\"small\\">Chưa có ai trả lời đúng.</td></tr>";
+        // popup Top 5 đúng nhanh (trong 7s) -> hiện 7s rồi tắt
+        showPopup(p.fastTop5 || [], p.popupShowMs || 7000);
       });
 
       socket.on("game:end", function(p){
@@ -828,7 +879,7 @@ io.on("connection", (socket) => {
     const pts = computePoints({ correct, elapsedMs, limitSec: q.timeLimitSec });
     p.score += pts;
 
-    // Lưu để tính Top đúng nhanh nhất
+    // Lưu để tính Top đúng nhanh (trong 7s)
     p.lastAnswer = { qIndex: room.qIndex, choiceIndex: selected, elapsedMs, correct, points: pts };
 
     const leaderboard = getTotalLeaderboard(room);
@@ -861,6 +912,7 @@ io.on("connection", (socket) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () => console.log("Realtime quiz running on port", PORT));
+
 
 
 
