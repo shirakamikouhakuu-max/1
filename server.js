@@ -1,6 +1,67 @@
 const express = require("express");
 const http = require("http");
+const crypto = require("crypto");
 const { Server } = require("socket.io");
+
+// ================== HOST KEY (BẮT BUỘC) ==================
+const HOST_KEY = process.env.HOST_KEY || "CHANGE_ME_HOST_KEY";
+const HOST_COOKIE_NAME = "host_auth";
+
+// Tạo chữ ký cookie dựa trên HOST_KEY (không lưu key ở client)
+function hostSig() {
+  return crypto.createHmac("sha256", HOST_KEY).update("host-ok").digest("hex");
+}
+
+function parseCookies(cookieHeader = "") {
+  const out = {};
+  cookieHeader.split(";").forEach((part) => {
+    const [k, ...rest] = part.trim().split("=");
+    if (!k) return;
+    out[k] = decodeURIComponent(rest.join("=") || "");
+  });
+  return out;
+}
+
+function hasHostCookie(req) {
+  const c = parseCookies(req.headers.cookie || "");
+  return c[HOST_COOKIE_NAME] === hostSig();
+}
+
+function setHostCookie(req, res) {
+  const isHttps =
+    req.secure || (req.headers["x-forwarded-proto"] || "").toString().includes("https");
+
+  const parts = [
+    `${HOST_COOKIE_NAME}=${encodeURIComponent(hostSig())}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Max-Age=2592000" // 30 ngày
+  ];
+  if (isHttps) parts.push("Secure");
+  res.setHeader("Set-Cookie", parts.join("; "));
+}
+
+function clearHostCookie(req, res) {
+  const isHttps =
+    req.secure || (req.headers["x-forwarded-proto"] || "").toString().includes("https");
+
+  const parts = [
+    `${HOST_COOKIE_NAME}=`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Max-Age=0"
+  ];
+  if (isHttps) parts.push("Secure");
+  res.setHeader("Set-Cookie", parts.join("; "));
+}
+
+function requireHost(req, res, next) {
+  if (hasHostCookie(req)) return next();
+  // Không có key -> đưa sang trang nhập key
+  return res.redirect("/host-login");
+}
 
 // ================== SỬA CÂU HỎI Ở ĐÂY ==================
 const QUIZ = {
@@ -27,7 +88,6 @@ const QUIZ = {
   ]
 };
 
-// Điểm: đúng + nhanh
 const MAX_POINTS = 1000;
 function computePoints({ correct, elapsedMs, limitSec }) {
   if (!correct) return 0;
@@ -38,6 +98,8 @@ function computePoints({ correct, elapsedMs, limitSec }) {
 }
 
 const app = express();
+app.use(express.urlencoded({ extended: false }));
+
 const server = http.createServer(app);
 const io = new Server(server);
 
@@ -111,6 +173,7 @@ function endQuestion(room) {
     correctIndex: q.correctIndex,
     top5
   });
+
   broadcast(room);
 }
 
@@ -123,9 +186,12 @@ function endGame(room) {
     top15: leaderboard.slice(0, 15),
     totalPlayers: leaderboard.length
   });
+
   broadcast(room);
 }
 
+// ================== HTML LAYOUT ==================
+// QUAN TRỌNG: load socket.io.js TRƯỚC body content để tránh "io is not defined"
 function layout(title, body) {
   return `<!doctype html>
 <html lang="vi">
@@ -177,416 +243,446 @@ function layout(title, body) {
 
 app.get("/health", (_, res) => res.json({ ok: true }));
 
-app.get("/", (_, res) =>
-  res.send(
-    layout(
-      "Mini Kahoot Realtime",
-      `
-  <div class="card">
-    <div class="header">
-      <h1>${QUIZ.title}</h1>
-      <span class="pill"><span class="dot" id="connDot"></span><span id="connText">Đang kết nối…</span></span>
-    </div>
-    <p class="small" style="margin:10px 0 0">Người chơi vào <b>/play</b>. Host vào <b>/host</b>.</p>
-    <hr/>
-    <div class="row">
-      <a class="btn" href="/host">Host (MC)</a>
-      <a class="btn" href="/play">Người chơi</a>
-    </div>
-  </div>
-
-  <script>
-    var socket = io();
-    var dot = document.getElementById("connDot");
-    var text = document.getElementById("connText");
-    function set(ok, msg){
-      dot.classList.remove("good","bad");
-      dot.classList.add(ok ? "good" : "bad");
-      text.textContent = msg;
-    }
-    socket.on("connect", function(){ set(true, "Đã kết nối"); });
-    socket.on("disconnect", function(){ set(false, "Mất kết nối"); });
-    socket.on("connect_error", function(){ set(false, "Lỗi kết nối"); });
-  </script>
-`
-    )
-  )
-);
-
-app.get("/host", (_, res) =>
-  res.send(
-    layout(
-      "Host",
-      `
-  <div class="header">
-    <h1>Host (MC)</h1>
-    <div class="row">
-      <a class="pill" href="/play">Mở trang Người chơi</a>
-      <span class="pill"><span class="dot" id="connDot"></span><span id="connText">Đang kết nối…</span></span>
-    </div>
-  </div>
-
-  <div class="grid">
+app.get("/", (_, res) => {
+  res.send(layout("Mini Kahoot Realtime", `
     <div class="card">
-      <div class="row" style="justify-content:space-between;align-items:flex-start">
-        <div>
-          <div class="small">Mã phòng</div>
-          <div id="roomCode" class="bigcode">—</div>
-          <div class="small">Bộ câu hỏi: <b>${QUIZ.title}</b></div>
+      <div class="header">
+        <h1>${QUIZ.title}</h1>
+      </div>
+      <p class="small" style="margin:10px 0 0">Người chơi vào <b>/play</b>. Host cần key vào <b>/host</b>.</p>
+      <hr/>
+      <div class="row">
+        <a class="btn" href="/play">Người chơi</a>
+        <a class="btn" href="/host">Host (cần key)</a>
+      </div>
+    </div>
+  `));
+});
+
+// ---------- HOST LOGIN ----------
+app.get("/host-login", (req, res) => {
+  res.send(layout("Nhập Host Key", `
+    <div class="card">
+      <h1>Nhập Host Key</h1>
+      <p class="small">Chỉ người có key mới vào được trang Host.</p>
+      <form method="POST" action="/host-login">
+        <label>Host Key</label>
+        <input name="key" placeholder="Nhập key..." />
+        <div class="row" style="margin-top:10px">
+          <button class="btn" type="submit">Vào Host</button>
+          <a class="btn" href="/play">Tôi là người chơi</a>
         </div>
+      </form>
+      <hr/>
+      <p class="small">Tip: bạn cũng có thể vào nhanh bằng link: <b>/host?key=YOUR_KEY</b></p>
+    </div>
+  `));
+});
+
+app.post("/host-login", (req, res) => {
+  const key = String(req.body.key || "").trim();
+  if (!key || key !== HOST_KEY) {
+    return res.send(layout("Sai Host Key", `
+      <div class="card">
+        <h1 class="bad">Sai Host Key</h1>
+        <p class="small">Vui lòng thử lại.</p>
         <div class="row">
-          <span class="pill">Người chơi: <b id="playersCount">0</b></span>
-          <span class="pill">Câu: <b id="qCounter">—</b></span>
+          <a class="btn" href="/host-login">Nhập lại</a>
+          <a class="btn" href="/play">Tôi là người chơi</a>
         </div>
       </div>
-      <hr/>
+    `));
+  }
+  setHostCookie(req, res);
+  return res.redirect("/host");
+});
+
+app.get("/host-logout", (req, res) => {
+  clearHostCookie(req, res);
+  return res.redirect("/play");
+});
+
+// ---------- HOST (có auto-login qua query ?key=...) ----------
+app.get("/host", (req, res, next) => {
+  const k = String(req.query.key || "").trim();
+  if (k && k === HOST_KEY) {
+    setHostCookie(req, res);
+    return res.redirect("/host");
+  }
+  return next();
+}, requireHost, (req, res) => {
+  res.send(layout("Host", `
+    <div class="header">
+      <h1>Host (MC)</h1>
       <div class="row">
-        <button id="btnCreate" class="btn">Tạo phòng</button>
-        <button id="btnStart" class="btn" disabled>Bắt đầu</button>
-        <button id="btnReveal" class="btn" disabled>Hiện kết quả</button>
-        <button id="btnNext" class="btn" disabled>Câu tiếp theo</button>
+        <a class="pill" href="/play">Mở trang Người chơi</a>
+        <a class="pill" href="/host-logout">Đăng xuất Host</a>
+        <span class="pill"><span class="dot" id="connDot"></span><span id="connText">Đang kết nối…</span></span>
       </div>
-      <p class="small" style="margin:10px 0 0">Nếu không bấm “Hiện kết quả”, hệ thống tự kết thúc câu khi hết thời gian.</p>
     </div>
 
-    <div class="card">
-      <div class="small">Câu hỏi đang chạy</div>
-      <h2 id="qText" style="margin:6px 0 0;font-size:18px">—</h2>
-      <div class="row" style="margin-top:8px">
-        <span class="badge">Thời gian: <b id="qTime">—</b></span>
-        <span class="badge">Đã trả lời: <b id="qAnswered">0</b></span>
+    <div class="grid">
+      <div class="card">
+        <div class="row" style="justify-content:space-between;align-items:flex-start">
+          <div>
+            <div class="small">Mã phòng</div>
+            <div id="roomCode" class="bigcode">—</div>
+            <div class="small">Bộ câu hỏi: <b>${QUIZ.title}</b></div>
+          </div>
+          <div class="row">
+            <span class="pill">Người chơi: <b id="playersCount">0</b></span>
+            <span class="pill">Câu: <b id="qCounter">—</b></span>
+          </div>
+        </div>
+        <hr/>
+        <div class="row">
+          <button id="btnCreate" class="btn" disabled>Tạo phòng</button>
+          <button id="btnStart" class="btn" disabled>Bắt đầu</button>
+          <button id="btnReveal" class="btn" disabled>Hiện kết quả</button>
+          <button id="btnNext" class="btn" disabled>Câu tiếp theo</button>
+        </div>
+        <p class="small" style="margin:10px 0 0">Top 5 sẽ hiện sau mỗi câu. Top 15 hiện khi kết thúc.</p>
       </div>
-      <div id="choices" class="choices"></div>
+
+      <div class="card">
+        <div class="small">Câu hỏi đang chạy</div>
+        <h2 id="qText" style="margin:6px 0 0;font-size:18px">—</h2>
+        <div class="row" style="margin-top:8px">
+          <span class="badge">Thời gian: <b id="qTime">—</b></span>
+          <span class="badge">Đã trả lời: <b id="qAnswered">0</b></span>
+        </div>
+        <div id="choices" class="choices"></div>
+      </div>
     </div>
-  </div>
 
-  <div class="card" style="margin-top:16px">
-    <div class="small">Bảng xếp hạng</div>
-    <h2 style="margin:6px 0 0;font-size:18px">Top 5 (sau mỗi câu)</h2>
-    <table>
-      <thead><tr><th>#</th><th>Tên</th><th>Điểm</th></tr></thead>
-      <tbody id="lbBody"><tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr></tbody>
-    </table>
-
-    <div id="finalWrap" style="display:none;margin-top:14px">
-      <hr/>
-      <div class="small">Kết quả cuối (Top 15)</div>
+    <div class="card" style="margin-top:16px">
+      <div class="small">Bảng xếp hạng</div>
+      <h2 style="margin:6px 0 0;font-size:18px">Top 5 (sau mỗi câu)</h2>
       <table>
         <thead><tr><th>#</th><th>Tên</th><th>Điểm</th></tr></thead>
-        <tbody id="finalBody"></tbody>
+        <tbody id="lbBody"><tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr></tbody>
       </table>
+
+      <div id="finalWrap" style="display:none;margin-top:14px">
+        <hr/>
+        <div class="small">Kết quả cuối (Top 15)</div>
+        <table>
+          <thead><tr><th>#</th><th>Tên</th><th>Điểm</th></tr></thead>
+          <tbody id="finalBody"></tbody>
+        </table>
+      </div>
     </div>
-  </div>
 
-  <script>
-    var socket = io();
-    var $ = function(id){ return document.getElementById(id); };
-    var esc = function(s){
-      return String(s).replace(/[&<>"']/g, function(m){
-        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]);
-      });
-    };
+    <script>
+      var socket = io();
+      var $ = function(id){ return document.getElementById(id); };
+      var esc = function(s){
+        return String(s).replace(/[&<>"']/g, function(m){
+          return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]);
+        });
+      };
 
-    var dot = $("connDot");
-    var text = $("connText");
-    function setConn(ok, msg){
-      dot.classList.remove("good","bad");
-      dot.classList.add(ok ? "good" : "bad");
-      text.textContent = msg;
-    }
-
-    var code = null;
-    var state = null;
-    var connected = false;
-
-    function setButtons(){
-      $("btnStart").disabled = (!connected || !code || (state && state.started));
-      $("btnReveal").disabled = (!connected || !code || !(state && state.started) || (state && state.ended));
-      $("btnNext").disabled  = (!connected || !code || !(state && state.started) || (state && state.ended));
-    }
-
-    socket.on("connect", function(){ connected = true; setConn(true,"Đã kết nối"); setButtons(); });
-    socket.on("disconnect", function(){ connected = false; setConn(false,"Mất kết nối"); setButtons(); });
-    socket.on("connect_error", function(){ connected = false; setConn(false,"Lỗi kết nối"); setButtons(); });
-
-    $("btnCreate").onclick = function(){
-      if (!connected) return alert("Chưa kết nối server realtime. Hãy tải lại trang.");
-      socket.emit("host:createRoom", {}, function(resp){
-        if (!resp || !resp.ok) return alert((resp && resp.error) || "Không tạo được phòng");
-        code = resp.code;
-        $("roomCode").textContent = code;
-        $("finalWrap").style.display = "none";
-        $("finalBody").innerHTML = "";
-        setButtons();
-      });
-    };
-
-    $("btnStart").onclick = function(){
-      socket.emit("host:start", { code: code }, function(resp){
-        if (!resp || !resp.ok) return alert((resp && resp.error) || "Không thể bắt đầu");
-        $("finalWrap").style.display = "none";
-        $("finalBody").innerHTML = "";
-        setButtons();
-      });
-    };
-
-    $("btnReveal").onclick = function(){
-      socket.emit("host:reveal", { code: code }, function(resp){
-        if (!resp || !resp.ok) alert((resp && resp.error) || "Lỗi");
-      });
-    };
-
-    $("btnNext").onclick = function(){
-      socket.emit("host:next", { code: code }, function(resp){
-        if (!resp || !resp.ok) return alert((resp && resp.error) || "Lỗi");
-        setButtons();
-      });
-    };
-
-    socket.on("players:count", function(payload){
-      $("playersCount").textContent = String((payload && payload.count) || 0);
-    });
-
-    socket.on("room:state", function(s){
-      state = s;
-      if (state && state.total != null && state.qIndex != null) {
-        var cur = state.qIndex + (state.started ? 1 : 0);
-        $("qCounter").textContent = String(cur) + "/" + String(state.total);
+      var dot = $("connDot");
+      var text = $("connText");
+      function setConn(ok, msg){
+        dot.classList.remove("good","bad");
+        dot.classList.add(ok ? "good" : "bad");
+        text.textContent = msg;
       }
-      setButtons();
-    });
 
-    socket.on("question:progress", function(p){
-      $("qAnswered").textContent = String(p.answered) + "/" + String(p.totalPlayers);
-    });
+      var code = null;
+      var state = null;
 
-    socket.on("question:start", function(q){
-      $("qText").textContent = q.text;
-      $("qTime").textContent = String(q.timeLimitSec) + "s";
-      $("qAnswered").textContent = "0";
-
-      $("choices").innerHTML = q.choices.map(function(c,i){
-        return "<div class=\\"choice\\"><b>" + String.fromCharCode(65+i) + ")</b> " + esc(c) + "</div>";
-      }).join("");
-    });
-
-    socket.on("question:end", function(p){
-      var correctIndex = p.correctIndex;
-      var top5 = p.top5 || [];
-
-      $("lbBody").innerHTML = top5.map(function(x,i){
-        return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
-      }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có người chơi.</td></tr>";
-
-      Array.prototype.forEach.call($("choices").querySelectorAll(".choice"), function(node, idx){
-        if (idx === correctIndex) node.innerHTML += ' <span class="badge good">✔ đúng</span>';
-      });
-    });
-
-    socket.on("game:end", function(p){
-      $("finalWrap").style.display = "block";
-      var top15 = p.top15 || [];
-      $("finalBody").innerHTML = top15.map(function(x,i){
-        return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
-      }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có dữ liệu.</td></tr>";
-      alert("Kết thúc game! Tổng người chơi: " + p.totalPlayers);
-      setButtons();
-    });
-  </script>
-`
-    )
-  )
-);
-
-app.get("/play", (_, res) =>
-  res.send(
-    layout(
-      "Người chơi",
-      `
-  <div class="header">
-    <h1>Người chơi</h1>
-    <div class="row">
-      <a class="pill" href="/host">Mở trang Host (MC)</a>
-      <span class="pill"><span class="dot" id="connDot"></span><span id="connText">Đang kết nối…</span></span>
-    </div>
-  </div>
-
-  <div class="grid">
-    <div class="card">
-      <div class="small">Tham gia phòng</div>
-      <div class="row" style="margin-top:8px">
-        <div style="flex:1;min-width:220px">
-          <label>Mã phòng</label>
-          <input id="code" placeholder="ABC123"/>
-        </div>
-        <div style="flex:1;min-width:220px">
-          <label>Tên của bạn</label>
-          <input id="name" placeholder="Nguyễn Văn A"/>
-        </div>
-      </div>
-      <div class="row" style="margin-top:10px">
-        <button id="btnJoin" class="btn">Tham gia</button>
-        <span id="joinStatus" class="small"></span>
-      </div>
-      <hr/>
-      <div class="row">
-        <span class="pill">Điểm: <b id="score">0</b></span>
-        <span class="pill">Hạng (tạm tính): <b id="rank">—</b></span>
-        <span class="pill">Còn lại: <b id="timeLeft">—</b></span>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="small">Câu hỏi</div>
-      <h2 id="qText" style="margin:6px 0 0;font-size:18px">—</h2>
-      <div id="choices" class="choices"></div>
-      <div id="feedback" class="small" style="margin-top:10px"></div>
-    </div>
-  </div>
-
-  <div class="card" style="margin-top:16px">
-    <div class="small">Bảng xếp hạng</div>
-    <h2 style="margin:6px 0 0;font-size:18px">Top 5 (sau mỗi câu)</h2>
-    <table>
-      <thead><tr><th>#</th><th>Tên</th><th>Điểm</th></tr></thead>
-      <tbody id="lbBody"><tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr></tbody>
-    </table>
-
-    <div id="finalWrap" style="display:none;margin-top:14px">
-      <hr/>
-      <div class="small">Kết quả cuối (Top 15)</div>
-      <table>
-        <thead><tr><th>#</th><th>Tên</th><th>Điểm</th></tr></thead>
-        <tbody id="finalBody"></tbody>
-      </table>
-    </div>
-  </div>
-
-  <script>
-    var socket = io();
-    var $ = function(id){ return document.getElementById(id); };
-    var esc = function(s){
-      return String(s).replace(/[&<>"']/g, function(m){
-        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]);
-      });
-    };
-
-    var dot = $("connDot");
-    var text = $("connText");
-    function setConn(ok, msg){
-      dot.classList.remove("good","bad");
-      dot.classList.add(ok ? "good" : "bad");
-      text.textContent = msg;
-    }
-    socket.on("connect", function(){ setConn(true,"Đã kết nối"); });
-    socket.on("disconnect", function(){ setConn(false,"Mất kết nối"); });
-    socket.on("connect_error", function(){ setConn(false,"Lỗi kết nối"); });
-
-    var joined = false;
-    var roomCode = null;
-    var timer = null;
-    var myAnswered = false;
-
-    function clearTimer(){ if (timer) clearInterval(timer); timer = null; }
-    function setCountdown(startedAtMs, timeLimitSec){
-      clearTimer();
-      function tick(){
-        var elapsed = Date.now() - startedAtMs;
-        var remainMs = Math.max(0, timeLimitSec*1000 - elapsed);
-        $("timeLeft").textContent = String(Math.ceil(remainMs/1000)) + "s";
-        if (remainMs <= 0) clearTimer();
+      function setButtons(){
+        $("btnCreate").disabled = !socket.connected;
+        $("btnStart").disabled  = !socket.connected || !code || (state && state.started);
+        $("btnReveal").disabled = !socket.connected || !code || !(state && state.started) || (state && state.ended);
+        $("btnNext").disabled   = !socket.connected || !code || !(state && state.started) || (state && state.ended);
       }
-      tick();
-      timer = setInterval(tick, 200);
-    }
 
-    $("btnJoin").onclick = function(){
-      var code = $("code").value.trim().toUpperCase();
-      var name = $("name").value.trim();
-      socket.emit("player:join", { code: code, name: name }, function(resp){
-        if (!resp || !resp.ok) {
-          joined = false;
-          $("joinStatus").innerHTML = '<span class="bad">✖ ' + esc((resp && resp.error) || "Không tham gia được") + '</span>';
-          return;
+      socket.on("connect", function(){ setConn(true,"Đã kết nối"); setButtons(); });
+      socket.on("disconnect", function(){ setConn(false,"Mất kết nối"); setButtons(); });
+      socket.on("connect_error", function(){ setConn(false,"Lỗi kết nối"); setButtons(); });
+
+      $("btnCreate").onclick = function(){
+        if (!socket.connected) return alert("Chưa kết nối realtime. Hãy tải lại trang.");
+        socket.emit("host:createRoom", {}, function(resp){
+          if (!resp || !resp.ok) return alert((resp && resp.error) || "Không tạo được phòng");
+          code = resp.code;
+          $("roomCode").textContent = code;
+          $("finalWrap").style.display = "none";
+          $("finalBody").innerHTML = "";
+          setButtons();
+        });
+      };
+
+      $("btnStart").onclick = function(){
+        socket.emit("host:start", { code: code }, function(resp){
+          if (!resp || !resp.ok) return alert((resp && resp.error) || "Không thể bắt đầu");
+          setButtons();
+        });
+      };
+
+      $("btnReveal").onclick = function(){
+        socket.emit("host:reveal", { code: code }, function(resp){
+          if (!resp || !resp.ok) alert((resp && resp.error) || "Lỗi");
+        });
+      };
+
+      $("btnNext").onclick = function(){
+        socket.emit("host:next", { code: code }, function(resp){
+          if (!resp || !resp.ok) return alert((resp && resp.error) || "Lỗi");
+          setButtons();
+        });
+      };
+
+      socket.on("players:count", function(p){
+        $("playersCount").textContent = String((p && p.count) || 0);
+      });
+
+      socket.on("room:state", function(s){
+        state = s;
+        if (state && state.total != null && state.qIndex != null) {
+          var cur = state.qIndex + (state.started ? 1 : 0);
+          $("qCounter").textContent = String(cur) + "/" + String(state.total);
         }
-        joined = true;
-        roomCode = code;
-        $("joinStatus").innerHTML = '<span class="good">✔ Đã vào phòng ' + esc(code) + '</span>';
-        $("finalWrap").style.display = "none";
-        $("finalBody").innerHTML = "";
-      });
-    };
-
-    socket.on("question:start", function(q){
-      if (!joined) return;
-      myAnswered = false;
-      $("feedback").textContent = "";
-      $("qText").textContent = q.text;
-      setCountdown(q.startedAtMs, q.timeLimitSec);
-
-      $("choices").innerHTML = q.choices.map(function(c,i){
-        return '<button class="choice" data-i="' + i + '"><b>' + String.fromCharCode(65+i) + ')</b> ' + esc(c) + '</button>';
-      }).join("");
-
-      Array.prototype.forEach.call($("choices").querySelectorAll("button.choice"), function(btn){
-        btn.onclick = function(){
-          if (myAnswered) return;
-          myAnswered = true;
-
-          var choiceIndex = Number(btn.getAttribute("data-i"));
-          Array.prototype.forEach.call($("choices").querySelectorAll("button.choice"), function(b){
-            b.setAttribute("disabled","disabled");
-          });
-
-          socket.emit("player:answer", { code: roomCode, choiceIndex: choiceIndex }, function(resp){
-            if (!resp || !resp.ok) {
-              $("feedback").innerHTML = '<span class="bad">✖ ' + esc((resp && resp.error) || "Lỗi") + '</span>';
-              return;
-            }
-            $("score").textContent = String(resp.totalScore || 0);
-            $("rank").textContent = String(resp.rank || "—");
-            $("feedback").innerHTML = resp.correct
-              ? '<span class="good">✔ Đúng</span> • +' + resp.points + " điểm"
-              : '<span class="bad">✖ Sai</span> • +0 điểm';
-          });
-        };
-      });
-    });
-
-    socket.on("question:end", function(p){
-      if (!joined) return;
-      clearTimer();
-
-      var correctIndex = p.correctIndex;
-      var top5 = p.top5 || [];
-
-      Array.prototype.forEach.call($("choices").querySelectorAll("button.choice"), function(b, idx){
-        if (idx === correctIndex) b.innerHTML += ' <span class="badge good">✔ đúng</span>';
+        setButtons();
       });
 
-      $("lbBody").innerHTML = top5.map(function(x,i){
-        return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
-      }).join("") || '<tr><td colspan="3" class="small">Chưa có người chơi.</td></tr>';
-    });
+      socket.on("question:progress", function(p){
+        $("qAnswered").textContent = String(p.answered) + "/" + String(p.totalPlayers);
+      });
 
-    socket.on("game:end", function(p){
-      if (!joined) return;
-      $("finalWrap").style.display = "block";
-      var top15 = p.top15 || [];
-      $("finalBody").innerHTML = top15.map(function(x,i){
-        return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
-      }).join("") || '<tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr>';
-      alert("Kết thúc game! Tổng người chơi: " + p.totalPlayers);
-    });
-  </script>
-`
-    )
-  )
-);
+      socket.on("question:start", function(q){
+        $("qText").textContent = q.text;
+        $("qTime").textContent = String(q.timeLimitSec) + "s";
+        $("qAnswered").textContent = "0";
+        $("choices").innerHTML = q.choices.map(function(c,i){
+          return "<div class=\\"choice\\"><b>" + String.fromCharCode(65+i) + ")</b> " + esc(c) + "</div>";
+        }).join("");
+      });
 
-// ================== SOCKET EVENTS ==================
+      socket.on("question:end", function(p){
+        var correctIndex = p.correctIndex;
+        var top5 = p.top5 || [];
+
+        $("lbBody").innerHTML = top5.map(function(x,i){
+          return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
+        }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có người chơi.</td></tr>";
+
+        Array.prototype.forEach.call($("choices").querySelectorAll(".choice"), function(node, idx){
+          if (idx === correctIndex) node.innerHTML += ' <span class="badge good">✔ đúng</span>';
+        });
+      });
+
+      socket.on("game:end", function(p){
+        $("finalWrap").style.display = "block";
+        var top15 = p.top15 || [];
+        $("finalBody").innerHTML = top15.map(function(x,i){
+          return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
+        }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có dữ liệu.</td></tr>";
+        alert("Kết thúc game! Tổng người chơi: " + p.totalPlayers);
+        setButtons();
+      });
+
+      setButtons();
+    </script>
+  `));
+});
+
+// ---------- PLAYER ----------
+app.get("/play", (_, res) => {
+  res.send(layout("Người chơi", `
+    <div class="header">
+      <h1>Người chơi</h1>
+      <div class="row">
+        <a class="pill" href="/host">Host (cần key)</a>
+        <span class="pill"><span class="dot" id="connDot"></span><span id="connText">Đang kết nối…</span></span>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="small">Tham gia phòng</div>
+        <div class="row" style="margin-top:8px">
+          <div style="flex:1;min-width:220px">
+            <label>Mã phòng</label>
+            <input id="code" placeholder="ABC123"/>
+          </div>
+          <div style="flex:1;min-width:220px">
+            <label>Tên của bạn</label>
+            <input id="name" placeholder="Nguyễn Văn A"/>
+          </div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <button id="btnJoin" class="btn">Tham gia</button>
+          <span id="joinStatus" class="small"></span>
+        </div>
+        <hr/>
+        <div class="row">
+          <span class="pill">Điểm: <b id="score">0</b></span>
+          <span class="pill">Hạng (tạm tính): <b id="rank">—</b></span>
+          <span class="pill">Còn lại: <b id="timeLeft">—</b></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="small">Câu hỏi</div>
+        <h2 id="qText" style="margin:6px 0 0;font-size:18px">—</h2>
+        <div id="choices" class="choices"></div>
+        <div id="feedback" class="small" style="margin-top:10px"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="small">Bảng xếp hạng</div>
+      <h2 style="margin:6px 0 0;font-size:18px">Top 5 (sau mỗi câu)</h2>
+      <table>
+        <thead><tr><th>#</th><th>Tên</th><th>Điểm</th></tr></thead>
+        <tbody id="lbBody"><tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr></tbody>
+      </table>
+
+      <div id="finalWrap" style="display:none;margin-top:14px">
+        <hr/>
+        <div class="small">Kết quả cuối (Top 15)</div>
+        <table>
+          <thead><tr><th>#</th><th>Tên</th><th>Điểm</th></tr></thead>
+          <tbody id="finalBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <script>
+      var socket = io();
+      var $ = function(id){ return document.getElementById(id); };
+      var esc = function(s){
+        return String(s).replace(/[&<>"']/g, function(m){
+          return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]);
+        });
+      };
+
+      var dot = $("connDot");
+      var text = $("connText");
+      function setConn(ok, msg){
+        dot.classList.remove("good","bad");
+        dot.classList.add(ok ? "good" : "bad");
+        text.textContent = msg;
+      }
+      socket.on("connect", function(){ setConn(true,"Đã kết nối"); });
+      socket.on("disconnect", function(){ setConn(false,"Mất kết nối"); });
+      socket.on("connect_error", function(){ setConn(false,"Lỗi kết nối"); });
+
+      var joined = false;
+      var roomCode = null;
+      var timer = null;
+      var myAnswered = false;
+
+      function clearTimer(){ if (timer) clearInterval(timer); timer = null; }
+      function setCountdown(startedAtMs, timeLimitSec){
+        clearTimer();
+        function tick(){
+          var elapsed = Date.now() - startedAtMs;
+          var remainMs = Math.max(0, timeLimitSec*1000 - elapsed);
+          $("timeLeft").textContent = String(Math.ceil(remainMs/1000)) + "s";
+          if (remainMs <= 0) clearTimer();
+        }
+        tick();
+        timer = setInterval(tick, 200);
+      }
+
+      $("btnJoin").onclick = function(){
+        var code = $("code").value.trim().toUpperCase();
+        var name = $("name").value.trim();
+        socket.emit("player:join", { code: code, name: name }, function(resp){
+          if (!resp || !resp.ok) {
+            joined = false;
+            $("joinStatus").innerHTML = '<span class="bad">✖ ' + esc((resp && resp.error) || "Không tham gia được") + '</span>';
+            return;
+          }
+          joined = true;
+          roomCode = code;
+          $("joinStatus").innerHTML = '<span class="good">✔ Đã vào phòng ' + esc(code) + '</span>';
+          $("finalWrap").style.display = "none";
+          $("finalBody").innerHTML = "";
+        });
+      };
+
+      socket.on("question:start", function(q){
+        if (!joined) return;
+        myAnswered = false;
+        $("feedback").textContent = "";
+        $("qText").textContent = q.text;
+        setCountdown(q.startedAtMs, q.timeLimitSec);
+
+        $("choices").innerHTML = q.choices.map(function(c,i){
+          return '<button class="choice" data-i="' + i + '"><b>' + String.fromCharCode(65+i) + ')</b> ' + esc(c) + '</button>';
+        }).join("");
+
+        Array.prototype.forEach.call($("choices").querySelectorAll("button.choice"), function(btn){
+          btn.onclick = function(){
+            if (myAnswered) return;
+            myAnswered = true;
+
+            var choiceIndex = Number(btn.getAttribute("data-i"));
+            Array.prototype.forEach.call($("choices").querySelectorAll("button.choice"), function(b){
+              b.setAttribute("disabled","disabled");
+            });
+
+            socket.emit("player:answer", { code: roomCode, choiceIndex: choiceIndex }, function(resp){
+              if (!resp || !resp.ok) {
+                $("feedback").innerHTML = '<span class="bad">✖ ' + esc((resp && resp.error) || "Lỗi") + '</span>';
+                return;
+              }
+              $("score").textContent = String(resp.totalScore || 0);
+              $("rank").textContent = String(resp.rank || "—");
+              $("feedback").innerHTML = resp.correct
+                ? '<span class="good">✔ Đúng</span> • +' + resp.points + " điểm"
+                : '<span class="bad">✖ Sai</span> • +0 điểm';
+            });
+          };
+        });
+      });
+
+      socket.on("question:end", function(p){
+        if (!joined) return;
+        clearTimer();
+
+        var correctIndex = p.correctIndex;
+        var top5 = p.top5 || [];
+
+        Array.prototype.forEach.call($("choices").querySelectorAll("button.choice"), function(b, idx){
+          if (idx === correctIndex) b.innerHTML += ' <span class="badge good">✔ đúng</span>';
+        });
+
+        $("lbBody").innerHTML = top5.map(function(x,i){
+          return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
+        }).join("") || '<tr><td colspan="3" class="small">Chưa có người chơi.</td></tr>';
+      });
+
+      socket.on("game:end", function(p){
+        if (!joined) return;
+        $("finalWrap").style.display = "block";
+        var top15 = p.top15 || [];
+        $("finalBody").innerHTML = top15.map(function(x,i){
+          return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
+        }).join("") || '<tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr>';
+        alert("Kết thúc game! Tổng người chơi: " + p.totalPlayers);
+      });
+    </script>
+  `));
+});
+
+// ================== SOCKET EVENTS (CHẶN HOST EVENT NẾU KHÔNG CÓ KEY) ==================
+function socketIsHost(socket) {
+  const cookies = parseCookies(socket.request.headers.cookie || "");
+  return cookies[HOST_COOKIE_NAME] === hostSig();
+}
+
 io.on("connection", (socket) => {
+  // --- Host events: phải có host cookie hợp lệ ---
   socket.on("host:createRoom", (_, ack) => {
+    if (!socketIsHost(socket)) return ack && ack({ ok: false, error: "Bạn cần HOST KEY để dùng chức năng Host." });
+
     const code = makeCode();
     const room = {
       code,
@@ -606,6 +702,8 @@ io.on("connection", (socket) => {
   });
 
   socket.on("host:start", ({ code }, ack) => {
+    if (!socketIsHost(socket)) return ack && ack({ ok: false, error: "Bạn cần HOST KEY để dùng chức năng Host." });
+
     const room = rooms.get(code);
     if (!room) return ack && ack({ ok: false, error: "Không tìm thấy phòng" });
     if (room.hostId !== socket.id) return ack && ack({ ok: false, error: "Bạn không phải Host" });
@@ -621,6 +719,8 @@ io.on("connection", (socket) => {
   });
 
   socket.on("host:reveal", ({ code }, ack) => {
+    if (!socketIsHost(socket)) return ack && ack({ ok: false, error: "Bạn cần HOST KEY để dùng chức năng Host." });
+
     const room = rooms.get(code);
     if (!room) return ack && ack({ ok: false, error: "Không tìm thấy phòng" });
     if (room.hostId !== socket.id) return ack && ack({ ok: false, error: "Bạn không phải Host" });
@@ -629,6 +729,8 @@ io.on("connection", (socket) => {
   });
 
   socket.on("host:next", ({ code }, ack) => {
+    if (!socketIsHost(socket)) return ack && ack({ ok: false, error: "Bạn cần HOST KEY để dùng chức năng Host." });
+
     const room = rooms.get(code);
     if (!room) return ack && ack({ ok: false, error: "Không tìm thấy phòng" });
     if (room.hostId !== socket.id) return ack && ack({ ok: false, error: "Bạn không phải Host" });
@@ -647,6 +749,7 @@ io.on("connection", (socket) => {
     ack && ack({ ok: true, ended: false });
   });
 
+  // --- Player events ---
   socket.on("player:join", ({ code, name }, ack) => {
     const room = rooms.get(code);
     if (!room) return ack && ack({ ok: false, error: "Mã phòng không đúng" });
@@ -719,4 +822,5 @@ io.on("connection", (socket) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () => console.log("Realtime quiz running on port", PORT));
+
 
