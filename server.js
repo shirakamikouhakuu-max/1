@@ -64,7 +64,7 @@ function requireHost(req, res, next) {
   return res.redirect("/host-login");
 }
 
-/* ================== QUIZ ================== */
+/* ================== QUIZ CONFIG ================== */
 const PRE_DELAY_MS = 500;      // chuẩn bị 0.5s
 const POPUP_SHOW_MS = 7000;    // popup top5 hiện 7s
 const MAX_POINTS = 1000;
@@ -105,7 +105,6 @@ function computePoints({ correct, elapsedMs, limitSec }) {
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 
-// static audio + image
 app.use("/audio", express.static(path.join(__dirname, "public", "audio"), { maxAge: "7d" }));
 app.use("/img", express.static(path.join(__dirname, "public", "img"), { maxAge: "7d" }));
 
@@ -162,7 +161,6 @@ function getFastCorrectTop5(room) {
       arr.push({ name: p.name, elapsedMs: a.elapsedMs, points: a.points });
     }
   }
-  // ✅ sửa sort đúng
   arr.sort((x, y) => x.elapsedMs - y.elapsedMs || y.points - x.points || x.name.localeCompare(y.name));
   return arr.slice(0, 5);
 }
@@ -222,7 +220,7 @@ function endGame(room) {
   broadcast(room);
 }
 
-/* ================== HTML LAYOUT (đã fix backtick 100%) ================== */
+/* ================== HTML LAYOUT (Splash 1 lần + KHÔNG NHÁY) ================== */
 function layout(title, bodyHtml) {
   return `<!doctype html>
 <html lang="vi">
@@ -230,6 +228,18 @@ function layout(title, bodyHtml) {
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>${title}</title>
+
+<!-- ✅ QUAN TRỌNG: set class trước khi browser render để không bị nháy splash -->
+<script>
+(function(){
+  try{
+    if (localStorage.getItem('splash_shown_once_v1') === '1') {
+      document.documentElement.classList.add('splash-seen');
+    }
+  }catch(e){}
+})();
+</script>
+
 <style>
 :root{--bg:#0b1020;--text:#e7ecff;--muted:#a9b3d9;--line:#23305c;--btn:#2d3a6b;--btn2:#1f2a53;--good:#37d67a;--bad:#ff5a5f}
 *{box-sizing:border-box;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
@@ -295,7 +305,7 @@ th{color:var(--muted);font-weight:800}
   opacity:0;
 }
 
-/* splash click mới vào */
+/* splash */
 .splash{
   position:fixed; inset:0;
   background:#000;
@@ -317,6 +327,13 @@ th{color:var(--muted);font-weight:800}
   font-size:12px;
   z-index:1000000;
 }
+
+/* ✅ CHỐNG NHÁY:
+   - mặc định ẩn giao diện
+   - nếu đã xem splash -> hiện giao diện, ẩn splash ngay từ đầu */
+.container{ visibility: hidden; }
+.splash-seen .container{ visibility: visible; }
+.splash-seen #splash{ display:none !important; }
 </style>
 </head>
 <body>
@@ -329,21 +346,17 @@ th{color:var(--muted);font-weight:800}
 <div class="container">${bodyHtml}</div>
 
 <script>
-// ✅ Splash chỉ hiện 1 lần ngay lúc truy cập link
+// ✅ Splash chỉ hiển thị 1 lần, và KHÔNG NHÁY
 (function(){
   var splash = document.getElementById('splash');
   if(!splash) return;
 
-  var KEY = 'splash_shown_once_v1';
-  try{
-    if (localStorage.getItem(KEY) === '1') {
-      splash.remove();
-      return;
-    }
-  }catch(e){}
+  // nếu đã seen (set ở HEAD) thì thôi
+  if (document.documentElement.classList.contains('splash-seen')) return;
 
   function hideSplash(){
-    try{ localStorage.setItem(KEY, '1'); }catch(e){}
+    try{ localStorage.setItem('splash_shown_once_v1', '1'); }catch(e){}
+    document.documentElement.classList.add('splash-seen'); // hiện giao diện ngay
     splash.classList.add('hide');
     setTimeout(function(){ if(splash) splash.remove(); }, 500);
   }
@@ -504,12 +517,7 @@ app.get("/host", (req, res, next) => {
       };
       function fmtMs(ms){ return (ms/1000).toFixed(2) + "s"; }
 
-      // ===== Màu đáp án (tối + chữ trắng rõ + không trùng) =====
-      var ANSWER_COLOR_POOL = [
-        "#1D3557","#0B3D91","#264653","#283618",
-        "#2F3E46","#3A0CA3","#5A189A","#6A040F",
-        "#004E64","#1B263B","#2D1E2F","#006D77"
-      ];
+      var ANSWER_COLOR_POOL = ["#1D3557","#0B3D91","#264653","#283618","#2F3E46","#3A0CA3","#5A189A","#6A040F","#004E64","#1B263B","#2D1E2F","#006D77"];
       function shuffle(arr){
         var a = arr.slice();
         for (var i = a.length - 1; i > 0; i--) {
@@ -534,7 +542,6 @@ app.get("/host", (req, res, next) => {
         });
       }
 
-      // ===== Timer chạy quanh khung card =====
       function ensureTimer(cardId){
         var card = $(cardId);
         if (!card) return null;
@@ -629,7 +636,6 @@ app.get("/host", (req, res, next) => {
         t.prog.style.opacity = "0";
       }
 
-      // ===== Audio =====
       var audio = $("qAudio");
       var soundBtn = $("soundBtn");
       function stopAudio(){ try{ audio.pause(); audio.currentTime = 0; }catch(e){} }
@@ -637,16 +643,11 @@ app.get("/host", (req, res, next) => {
         stopAudio();
         soundBtn.style.display = "none";
         setTimeout(function(){
-          audio.play().catch(function(){
-            soundBtn.style.display = "inline-flex";
-          });
+          audio.play().catch(function(){ soundBtn.style.display = "inline-flex"; });
         }, delayMs);
       }
-      soundBtn.onclick = function(){
-        audio.play().then(function(){ soundBtn.style.display = "none"; }).catch(function(){});
-      };
+      soundBtn.onclick = function(){ audio.play().then(function(){ soundBtn.style.display = "none"; }).catch(function(){}); };
 
-      // ===== UI trạng thái =====
       var dot = $("connDot");
       var text = $("connText");
       function setConn(ok, msg){
@@ -713,15 +714,12 @@ app.get("/host", (req, res, next) => {
         });
       };
 
-      socket.on("players:count", function(p){
-        $("playersCount").textContent = String((p && p.count) || 0);
-      });
+      socket.on("players:count", function(p){ $("playersCount").textContent = String((p && p.count) || 0); });
 
       socket.on("room:state", function(s){
         state = s;
         if (state && state.total != null && state.qIndex != null) {
-          var cur = state.qIndex + (state.started ? 1 : 0);
-          $("qCounter").textContent = String(cur) + "/" + String(state.total);
+          $("qCounter").textContent = String(state.qIndex + 1) + "/" + String(state.total);
         }
         setButtons();
       });
@@ -732,7 +730,6 @@ app.get("/host", (req, res, next) => {
 
       socket.on("question:start", function(q){
         hidePopup(); stopAudio(); stopTimer("qaCardHost");
-
         $("qText").textContent = q.text;
         $("qAnswered").textContent = "0";
 
@@ -855,12 +852,7 @@ app.get("/play", (_, res) => {
       };
       function fmtMs(ms){ return (ms/1000).toFixed(2) + "s"; }
 
-      // ===== Màu đáp án =====
-      var ANSWER_COLOR_POOL = [
-        "#1D3557","#0B3D91","#264653","#283618",
-        "#2F3E46","#3A0CA3","#5A189A","#6A040F",
-        "#004E64","#1B263B","#2D1E2F","#006D77"
-      ];
+      var ANSWER_COLOR_POOL = ["#1D3557","#0B3D91","#264653","#283618","#2F3E46","#3A0CA3","#5A189A","#6A040F","#004E64","#1B263B","#2D1E2F","#006D77"];
       function shuffle(arr){
         var a = arr.slice();
         for (var i = a.length - 1; i > 0; i--) {
@@ -885,7 +877,6 @@ app.get("/play", (_, res) => {
         });
       }
 
-      // ===== Timer quanh khung =====
       function ensureTimer(cardId){
         var card = $(cardId);
         if (!card) return null;
@@ -980,7 +971,6 @@ app.get("/play", (_, res) => {
         t.prog.style.opacity = "0";
       }
 
-      // ===== Audio =====
       var audio = $("qAudio");
       var soundBtn = $("soundBtn");
       function stopAudio(){ try{ audio.pause(); audio.currentTime = 0; }catch(e){} }
@@ -988,16 +978,11 @@ app.get("/play", (_, res) => {
         stopAudio();
         soundBtn.style.display = "none";
         setTimeout(function(){
-          audio.play().catch(function(){
-            soundBtn.style.display = "inline-flex";
-          });
+          audio.play().catch(function(){ soundBtn.style.display = "inline-flex"; });
         }, delayMs);
       }
-      soundBtn.onclick = function(){
-        audio.play().then(function(){ soundBtn.style.display = "none"; }).catch(function(){});
-      };
+      soundBtn.onclick = function(){ audio.play().then(function(){ soundBtn.style.display = "none"; }).catch(function(){}); };
 
-      // ===== Kết nối =====
       var dot = $("connDot");
       var text = $("connText");
       function setConn(ok, msg){
@@ -1024,7 +1009,6 @@ app.get("/play", (_, res) => {
         });
       }
 
-      // ===== Popup top 5 =====
       var popupTimer = null;
       function hidePopup(){ $("fastPopup").style.display = "none"; }
       function showPopup(list, showMs){
@@ -1079,9 +1063,7 @@ app.get("/play", (_, res) => {
         playAudioAfter(delay);
         startTimer("qaCardPlay", startLocalMs, q.timeLimitSec * 1000);
 
-        enableTimer = setTimeout(function(){
-          setAnswerEnabled(true);
-        }, delay);
+        enableTimer = setTimeout(function(){ setAnswerEnabled(true); }, delay);
 
         Array.prototype.forEach.call($("choicesPlay").querySelectorAll("button.choice"), function(btn){
           btn.onclick = function(){
@@ -1142,7 +1124,7 @@ function socketIsHost(socket) {
 
 io.on("connection", (socket) => {
   socket.on("host:createRoom", (_, ack) => {
-    if (!socketIsHost(socket)) return ack && ack({ ok: false, error: "Bạn cần HOST KEY để dùng chức năng Host." });
+    if (!socketIsHost(socket)) return ack && ack({ ok: false, error: "Bạn cần HOST KEY để dùng Host." });
 
     const code = makeCode();
     const room = {
@@ -1164,7 +1146,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("host:start", ({ code }, ack) => {
-    if (!socketIsHost(socket)) return ack && ack({ ok: false, error: "Bạn cần HOST KEY để dùng chức năng Host." });
+    if (!socketIsHost(socket)) return ack && ack({ ok: false, error: "Bạn cần HOST KEY để dùng Host." });
 
     const room = rooms.get(code);
     if (!room) return ack && ack({ ok: false, error: "Không tìm thấy phòng" });
@@ -1179,7 +1161,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("host:reveal", ({ code }, ack) => {
-    if (!socketIsHost(socket)) return ack && ack({ ok: false, error: "Bạn cần HOST KEY để dùng chức năng Host." });
+    if (!socketIsHost(socket)) return ack && ack({ ok: false, error: "Bạn cần HOST KEY để dùng Host." });
 
     const room = rooms.get(code);
     if (!room) return ack && ack({ ok: false, error: "Không tìm thấy phòng" });
@@ -1190,7 +1172,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("host:next", ({ code }, ack) => {
-    if (!socketIsHost(socket)) return ack && ack({ ok: false, error: "Bạn cần HOST KEY để dùng chức năng Host." });
+    if (!socketIsHost(socket)) return ack && ack({ ok: false, error: "Bạn cần HOST KEY để dùng Host." });
 
     const room = rooms.get(code);
     if (!room) return ack && ack({ ok: false, error: "Không tìm thấy phòng" });
