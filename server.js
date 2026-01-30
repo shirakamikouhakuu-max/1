@@ -337,19 +337,35 @@ function layout(title, body) {
   <script src="/socket.io/socket.io.js"></script>
   <div class="container">${body}</div>
 
-  <script>
-    (function(){
-      var splash = document.getElementById("splash");
-      if(!splash) return;
-      function hideSplash(){
-        splash.classList.add("hide");
-        setTimeout(function(){ splash.remove(); }, 500);
+<script>
+  (function(){
+    var splash = document.getElementById("splash");
+    if(!splash) return;
+
+    var KEY = "splash_shown_once_v1";
+
+    // ✅ Nếu đã từng xem splash -> bỏ qua luôn
+    try{
+      if (localStorage.getItem(KEY) === "1") {
+        splash.remove();
+        return;
       }
-      splash.addEventListener("click", hideSplash);
-    })();
-  </script>
-</body>
-</html>`;
+    }catch(e){}
+
+    function hideSplash(){
+      // ✅ đánh dấu đã xem (chỉ 1 lần)
+      try{ localStorage.setItem(KEY, "1"); }catch(e){}
+
+      splash.classList.add("hide");
+      setTimeout(function(){
+        if (splash) splash.remove();
+      }, 500);
+    }
+
+    // ✅ CHỈ khi click mới vào
+    splash.addEventListener("click", hideSplash);
+  })();
+</script>
 }
 
 /* ================== ROUTES ================== */
