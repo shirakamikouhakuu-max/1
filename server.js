@@ -1,6 +1,7 @@
 const express = require("express");
 const http = require("http");
 const crypto = require("crypto");
+const path = require("path");
 const { Server } = require("socket.io");
 
 /* ================== HOST KEY ================== */
@@ -36,7 +37,7 @@ function setHostCookie(req, res) {
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
-    "Max-Age=2592000" // 30 ngày
+    "Max-Age=2592000"
   ];
   if (isHttps) parts.push("Secure");
   res.setHeader("Set-Cookie", parts.join("; "));
@@ -64,37 +65,38 @@ function requireHost(req, res, next) {
 }
 
 /* ================== QUIZ ================== */
+const PRE_DELAY_MS = 3000;     // chuyển câu mới -> 3s sau mới bắt đầu (mới phát nhạc + cho trả lời)
+const POPUP_SHOW_MS = 7000;    // popup top 5 hiện 7s
+const MAX_POINTS = 1000;
+
 const QUIZ = {
-  title: "Quiz Realtime – Tổng điểm + Popup Top 5",
+  title: "Quiz Realtime – 20s + Nhạc Olympia + Popup Top 5",
   questions: [
     {
       text: "1) Thủ đô của Việt Nam là gì?",
       choices: ["TP.HCM", "Hà Nội", "Đà Nẵng", "Huế"],
       correctIndex: 1,
-      timeLimitSec: 15
+      timeLimitSec: 20
     },
     {
       text: "2) 5 x 6 = ?",
       choices: ["11", "25", "30", "56"],
       correctIndex: 2,
-      timeLimitSec: 12
+      timeLimitSec: 20
     },
     {
       text: "3) Biển Đông tiếng Anh là gì?",
       choices: ["East Sea", "Red Sea", "Black Sea", "Yellow Sea"],
       correctIndex: 0,
-      timeLimitSec: 15
+      timeLimitSec: 20
     }
   ]
 };
 
-const MAX_POINTS = 1000;
-const POPUP_SHOW_MS = 7000;
-
 function computePoints({ correct, elapsedMs, limitSec }) {
   if (!correct) return 0;
   const limitMs = limitSec * 1000;
-  const t = Math.max(0, Math.min(1, elapsedMs / limitMs)); // 0..1
+  const t = Math.max(0, Math.min(1, elapsedMs / limitMs));
   const pts = Math.round(MAX_POINTS * (1 - t));
   return Math.max(1, pts);
 }
@@ -102,6 +104,12 @@ function computePoints({ correct, elapsedMs, limitSec }) {
 /* ================== APP ================== */
 const app = express();
 app.use(express.urlencoded({ extended: false }));
+
+// PHỤC VỤ FILE NHẠC: đặt file ở public/audio/olympia.mp3
+app.use(
+  "/audio",
+  express.static(path.join(__dirname, "public", "audio"), { maxAge: "7d" })
+);
 
 const server = http.createServer(app);
 const io = new Server(server);
@@ -133,7 +141,8 @@ function safeQuestionPayload(room) {
     text: q.text,
     choices: q.choices,
     timeLimitSec: q.timeLimitSec,
-    startedAtMs: room.qStartAtMs
+    startedAtMs: room.qStartAtMs,  // thời điểm bắt đầu TRẢ LỜI (sau 3s)
+    preDelayMs: PRE_DELAY_MS
   };
 }
 
@@ -146,19 +155,16 @@ function getTotalLeaderboard(room) {
   return list;
 }
 
-// Top 5 đúng & nhanh của câu vừa xong (7s chỉ là thời gian HIỂN THỊ popup)
 function getFastCorrectTop5(room) {
   const arr = [];
   for (const p of room.players.values()) {
     const a = p.lastAnswer;
     if (a && a.qIndex === room.qIndex && a.correct) {
-      arr.push({
-        name: p.name,
-        elapsedMs: a.elapsedMs,
-        points: a.points
-      });
+      arr.push({ name: p.name, elapsedMs: a.elapsedMs, points: a.points });
     }
   }
+  arr.sort((x, y) => x.elapsedMs - y.elapsedMs || y.points - y.points || x.name.localeCompare(y.name));
+  // sửa nhỏ: y.points - x.points
   arr.sort((x, y) => x.elapsedMs - y.elapsedMs || y.points - x.points || x.name.localeCompare(y.name));
   return arr.slice(0, 5);
 }
@@ -170,13 +176,17 @@ function broadcast(room) {
 function startQuestion(room) {
   if (room.timer) clearTimeout(room.timer);
 
-  room.qStartAtMs = Date.now();
+  // bắt đầu trả lời sau 3s
+  room.qStartAtMs = Date.now() + PRE_DELAY_MS;
+
   for (const p of room.players.values()) p.lastAnswer = null;
 
   io.to(room.code).emit("question:start", safeQuestionPayload(room));
 
   const q = QUIZ.questions[room.qIndex];
-  room.timer = setTimeout(() => endQuestion(room), q.timeLimitSec * 1000);
+
+  // tổng thời gian: 3s chờ + 20s trả lời
+  room.timer = setTimeout(() => endQuestion(room), PRE_DELAY_MS + q.timeLimitSec * 1000);
 
   broadcast(room);
 }
@@ -217,9 +227,7 @@ function endGame(room) {
   broadcast(room);
 }
 
-/* ================== HTML LAYOUT ==================
-   Lưu ý: load socket.io.js TRƯỚC inline scripts
-*/
+/* ================== HTML LAYOUT ================== */
 function layout(title, body) {
   return `<!doctype html>
 <html lang="vi">
@@ -253,46 +261,24 @@ function layout(title, body) {
     .choices{display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px}
     @media(min-width:720px){.choices{grid-template-columns:1fr 1fr}}
 
-    /* ====== ĐÁP ÁN: TƯƠNG PHẢN CAO (dễ nhìn) ====== */
+    /* ĐÁP ÁN TƯƠNG PHẢN CAO */
     .choice{
-      display:flex;
-      align-items:center;
-      gap:12px;
-      padding:14px 14px;
-      border-radius:14px;
+      display:flex;align-items:center;gap:12px;
+      padding:14px 14px;border-radius:14px;
       border:1px solid rgba(231,236,255,.22);
-      background:rgba(0,0,0,.32);
-      color:var(--text);
-      cursor:pointer;
-      text-align:left;
+      background:rgba(0,0,0,.32);color:var(--text);
+      cursor:pointer;text-align:left;
     }
-    .choice:hover{
-      background:rgba(0,0,0,.42);
-      border-color: rgba(231,236,255,.38);
-    }
-    .choice[disabled]{
-      opacity:.78;
-      cursor:not-allowed;
-    }
+    .choice:hover{background:rgba(0,0,0,.42);border-color: rgba(231,236,255,.38);}
+    .choice[disabled]{opacity:.78;cursor:not-allowed;}
     .choice .opt{
-      width:34px;
-      height:34px;
-      border-radius:10px;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      font-weight:900;
-      letter-spacing:.5px;
-      background:rgba(231,236,255,.95);
-      color:#0b1020;
-      border:1px solid rgba(0,0,0,.18);
-      flex:0 0 auto;
+      width:34px;height:34px;border-radius:10px;
+      display:flex;align-items:center;justify-content:center;
+      font-weight:900;letter-spacing:.5px;
+      background:rgba(231,236,255,.95);color:#0b1020;
+      border:1px solid rgba(0,0,0,.18);flex:0 0 auto;
     }
-    .choice .txt{
-      flex:1;
-      font-weight:700;
-      line-height:1.25;
-    }
+    .choice .txt{flex:1;font-weight:700;line-height:1.25;}
 
     .badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:12px;border:1px solid var(--line);background:rgba(0,0,0,.14);color:var(--muted)}
     .good{color:var(--good)} .bad{color:var(--bad)}
@@ -300,7 +286,6 @@ function layout(title, body) {
     th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left;font-size:14px}
     th{color:var(--muted);font-weight:800}
 
-    /* Popup */
     .overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;padding:16px;z-index:9999}
     .modal{max-width:720px;width:100%}
   </style>
@@ -346,8 +331,6 @@ app.get("/host-login", (req, res) => {
           <a class="btn" href="/play">Tôi là người chơi</a>
         </div>
       </form>
-      <hr/>
-      <p class="small">Có thể vào nhanh: <b>/host?key=YOUR_KEY</b></p>
     </div>
   `));
 });
@@ -375,7 +358,6 @@ app.get("/host-logout", (req, res) => {
   return res.redirect("/play");
 });
 
-// Cho phép /host?key=... để set cookie nhanh
 app.get("/host", (req, res, next) => {
   const k = String(req.query.key || "").trim();
   if (k && k === HOST_KEY) {
@@ -390,9 +372,12 @@ app.get("/host", (req, res, next) => {
       <div class="row">
         <a class="pill" href="/play">Mở trang Người chơi</a>
         <a class="pill" href="/host-logout">Đăng xuất Host</a>
+        <button id="soundBtn" class="pill" style="display:none;background:transparent;cursor:pointer">🔊 Bật âm thanh</button>
         <span class="pill"><span class="dot" id="connDot"></span><span id="connText">Đang kết nối…</span></span>
       </div>
     </div>
+
+    <audio id="qAudio" preload="auto" src="/audio/olympia.mp3"></audio>
 
     <div class="grid">
       <div class="card">
@@ -400,7 +385,7 @@ app.get("/host", (req, res, next) => {
           <div>
             <div class="small">Mã phòng</div>
             <div id="roomCode" class="bigcode">—</div>
-            <div class="small">Bộ câu hỏi: <b>${QUIZ.title}</b></div>
+            <div class="small">Nhạc sẽ phát sau <b>3 giây</b>, thời gian trả lời <b>20 giây</b>.</div>
           </div>
           <div class="row">
             <span class="pill">Người chơi: <b id="playersCount">0</b></span>
@@ -414,7 +399,6 @@ app.get("/host", (req, res, next) => {
           <button id="btnReveal" class="btn" disabled>Kết thúc câu</button>
           <button id="btnNext" class="btn" disabled>Câu tiếp theo</button>
         </div>
-        <p class="small" style="margin:10px 0 0">Sau khi kết thúc mỗi câu: popup Top 5 đúng & nhanh sẽ hiện 7s rồi tự tắt.</p>
       </div>
 
       <div class="card">
@@ -437,7 +421,6 @@ app.get("/host", (req, res, next) => {
       </table>
     </div>
 
-    <!-- POPUP TOP 5 -->
     <div id="fastPopup" class="overlay">
       <div class="modal card">
         <div class="header">
@@ -459,10 +442,27 @@ app.get("/host", (req, res, next) => {
           return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]);
         });
       };
-      function fmtMs(ms){
-        if (ms == null) return "-";
-        return (ms/1000).toFixed(2) + "s";
+      function fmtMs(ms){ return (ms/1000).toFixed(2) + "s"; }
+
+      var audio = $("qAudio");
+      var soundBtn = $("soundBtn");
+      function stopAudio(){
+        try{ audio.pause(); audio.currentTime = 0; }catch(e){}
       }
+      function playAudioAfter(delayMs){
+        stopAudio();
+        soundBtn.style.display = "none";
+        setTimeout(function(){
+          audio.play().catch(function(){
+            soundBtn.style.display = "inline-flex";
+          });
+        }, delayMs);
+      }
+      soundBtn.onclick = function(){
+        audio.play().then(function(){
+          soundBtn.style.display = "none";
+        }).catch(function(){});
+      };
 
       var dot = $("connDot");
       var text = $("connText");
@@ -509,6 +509,7 @@ app.get("/host", (req, res, next) => {
           code = resp.code;
           $("roomCode").textContent = code;
           hidePopup();
+          stopAudio();
           setButtons();
         });
       };
@@ -517,6 +518,7 @@ app.get("/host", (req, res, next) => {
         socket.emit("host:start", { code: code }, function(resp){
           if (!resp || !resp.ok) return alert((resp && resp.error) || "Không thể bắt đầu");
           hidePopup();
+          stopAudio();
           setButtons();
         });
       };
@@ -531,6 +533,7 @@ app.get("/host", (req, res, next) => {
         socket.emit("host:next", { code: code }, function(resp){
           if (!resp || !resp.ok) return alert((resp && resp.error) || "Lỗi");
           hidePopup();
+          stopAudio();
           setButtons();
         });
       };
@@ -554,6 +557,8 @@ app.get("/host", (req, res, next) => {
 
       socket.on("question:start", function(q){
         hidePopup();
+        stopAudio();
+
         $("qText").textContent = q.text;
         $("qTime").textContent = String(q.timeLimitSec) + "s";
         $("qAnswered").textContent = "0";
@@ -565,19 +570,21 @@ app.get("/host", (req, res, next) => {
                    '<span class="txt">' + esc(c) + '</span>' +
                  '</div>';
         }).join("");
+
+        var delay = Math.max(0, q.startedAtMs - Date.now());
+        playAudioAfter(delay);
       });
 
       socket.on("question:end", function(p){
-        // Update bảng tổng điểm
+        stopAudio();
+
         var totalTop15 = p.totalTop15 || [];
         $("lbBody").innerHTML = totalTop15.map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
         }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có dữ liệu.</td></tr>";
 
-        // Popup Top 5 (7s)
         showPopup(p.fastTop5 || [], p.popupShowMs || 7000);
 
-        // Highlight đáp án đúng
         var correctIndex = p.correctIndex;
         var nodes = $("choices").querySelectorAll(".choice");
         nodes.forEach(function(node, idx){
@@ -589,6 +596,7 @@ app.get("/host", (req, res, next) => {
       });
 
       socket.on("game:end", function(p){
+        stopAudio();
         var totalTop15 = p.totalTop15 || [];
         $("lbBody").innerHTML = totalTop15.map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
@@ -607,9 +615,12 @@ app.get("/play", (_, res) => {
       <h1>Người chơi</h1>
       <div class="row">
         <a class="pill" href="/host">Host (cần key)</a>
+        <button id="soundBtn" class="pill" style="display:none;background:transparent;cursor:pointer">🔊 Bật âm thanh</button>
         <span class="pill"><span class="dot" id="connDot"></span><span id="connText">Đang kết nối…</span></span>
       </div>
     </div>
+
+    <audio id="qAudio" preload="auto" src="/audio/olympia.mp3"></audio>
 
     <div class="grid">
       <div class="card">
@@ -632,8 +643,9 @@ app.get("/play", (_, res) => {
         <div class="row">
           <span class="pill">Điểm: <b id="score">0</b></span>
           <span class="pill">Hạng (tạm tính): <b id="rank">—</b></span>
-          <span class="pill">Còn lại: <b id="timeLeft">—</b></span>
+          <span class="pill"><b id="timeLeft">—</b></span>
         </div>
+        <p class="small" style="margin:10px 0 0">Chuyển câu mới → chờ <b>3 giây</b> → nhạc chạy & bắt đầu trả lời <b>20 giây</b>.</p>
       </div>
 
       <div class="card">
@@ -653,7 +665,6 @@ app.get("/play", (_, res) => {
       </table>
     </div>
 
-    <!-- POPUP TOP 5 -->
     <div id="fastPopup" class="overlay">
       <div class="modal card">
         <div class="header">
@@ -675,10 +686,27 @@ app.get("/play", (_, res) => {
           return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]);
         });
       };
-      function fmtMs(ms){
-        if (ms == null) return "-";
-        return (ms/1000).toFixed(2) + "s";
+      function fmtMs(ms){ return (ms/1000).toFixed(2) + "s"; }
+
+      var audio = $("qAudio");
+      var soundBtn = $("soundBtn");
+      function stopAudio(){
+        try{ audio.pause(); audio.currentTime = 0; }catch(e){}
       }
+      function playAudioAfter(delayMs){
+        stopAudio();
+        soundBtn.style.display = "none";
+        setTimeout(function(){
+          audio.play().catch(function(){
+            soundBtn.style.display = "inline-flex";
+          });
+        }, delayMs);
+      }
+      soundBtn.onclick = function(){
+        audio.play().then(function(){
+          soundBtn.style.display = "none";
+        }).catch(function(){});
+      };
 
       var dot = $("connDot");
       var text = $("connText");
@@ -695,6 +723,37 @@ app.get("/play", (_, res) => {
       var roomCode = null;
       var timer = null;
       var myAnswered = false;
+      var enableTimer = null;
+
+      function clearTimer(){ if (timer) clearInterval(timer); timer = null; }
+      function clearEnable(){ if (enableTimer) clearTimeout(enableTimer); enableTimer = null; }
+
+      function setAnswerEnabled(enabled){
+        Array.prototype.forEach.call($("choices").querySelectorAll("button.choice"), function(b){
+          if (!myAnswered) {
+            if (enabled) b.removeAttribute("disabled");
+            else b.setAttribute("disabled","disabled");
+          }
+        });
+      }
+
+      function setCountdown(startAtMs, timeLimitSec){
+        clearTimer();
+        function tick(){
+          var now = Date.now();
+          if (now < startAtMs){
+            var prep = Math.ceil((startAtMs - now)/1000);
+            $("timeLeft").textContent = "Chuẩn bị: " + prep + "s";
+            return;
+          }
+          var elapsed = now - startAtMs;
+          var remainMs = Math.max(0, timeLimitSec*1000 - elapsed);
+          $("timeLeft").textContent = "Còn lại: " + String(Math.ceil(remainMs/1000)) + "s";
+          if (remainMs <= 0) clearTimer();
+        }
+        tick();
+        timer = setInterval(tick, 200);
+      }
 
       var popupTimer = null;
       function hidePopup(){ $("fastPopup").style.display = "none"; }
@@ -711,19 +770,6 @@ app.get("/play", (_, res) => {
 
         $("fastPopup").style.display = "flex";
         popupTimer = setTimeout(hidePopup, showMs || 7000);
-      }
-
-      function clearTimer(){ if (timer) clearInterval(timer); timer = null; }
-      function setCountdown(startedAtMs, timeLimitSec){
-        clearTimer();
-        function tick(){
-          var elapsed = Date.now() - startedAtMs;
-          var remainMs = Math.max(0, timeLimitSec*1000 - elapsed);
-          $("timeLeft").textContent = String(Math.ceil(remainMs/1000)) + "s";
-          if (remainMs <= 0) clearTimer();
-        }
-        tick();
-        timer = setInterval(tick, 200);
       }
 
       $("btnJoin").onclick = function(){
@@ -743,32 +789,48 @@ app.get("/play", (_, res) => {
 
       socket.on("question:start", function(q){
         if (!joined) return;
+
         hidePopup();
+        stopAudio();
+        clearEnable();
 
         myAnswered = false;
         $("feedback").textContent = "";
         $("qText").textContent = q.text;
-        setCountdown(q.startedAtMs, q.timeLimitSec);
 
-        // ====== ĐÁP ÁN TƯƠNG PHẢN CAO ======
+        // tạo đáp án (disable trong thời gian chờ 3s)
         $("choices").innerHTML = q.choices.map(function(c,i){
           var letter = String.fromCharCode(65+i);
-          return '<button class="choice" data-i="' + i + '">' +
+          return '<button class="choice" data-i="' + i + '" disabled>' +
                    '<span class="opt">' + letter + '</span>' +
                    '<span class="txt">' + esc(c) + '</span>' +
                  '</button>';
         }).join("");
 
+        // tính delay thực tế còn lại
+        var delay = Math.max(0, q.startedAtMs - Date.now());
+
+        // bật nhạc sau delay
+        playAudioAfter(delay);
+
+        // đếm thời gian: prep -> 20s
+        setCountdown(q.startedAtMs, q.timeLimitSec);
+
+        // enable trả lời đúng lúc bắt đầu
+        enableTimer = setTimeout(function(){
+          setAnswerEnabled(true);
+        }, delay);
+
         Array.prototype.forEach.call($("choices").querySelectorAll("button.choice"), function(btn){
           btn.onclick = function(){
             if (myAnswered) return;
+            // chặn nếu vẫn còn đang chuẩn bị
+            if (Date.now() < q.startedAtMs) return;
+
             myAnswered = true;
 
             var choiceIndex = Number(btn.getAttribute("data-i"));
-
-            Array.prototype.forEach.call($("choices").querySelectorAll("button.choice"), function(b){
-              b.setAttribute("disabled","disabled");
-            });
+            setAnswerEnabled(false);
 
             socket.emit("player:answer", { code: roomCode, choiceIndex: choiceIndex }, function(resp){
               if (!resp || !resp.ok) {
@@ -787,20 +849,24 @@ app.get("/play", (_, res) => {
 
       socket.on("question:end", function(p){
         if (!joined) return;
+
+        stopAudio();
+        clearEnable();
         clearTimer();
 
-        // Update bảng tổng điểm
         var totalTop15 = p.totalTop15 || [];
         $("lbBody").innerHTML = totalTop15.map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
         }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có dữ liệu.</td></tr>";
 
-        // Popup Top 5 (7s)
         showPopup(p.fastTop5 || [], p.popupShowMs || 7000);
       });
 
       socket.on("game:end", function(p){
-        if (!joined) return;
+        stopAudio();
+        clearEnable();
+        clearTimer();
+
         var totalTop15 = p.totalTop15 || [];
         $("lbBody").innerHTML = totalTop15.map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
@@ -818,7 +884,6 @@ function socketIsHost(socket) {
 }
 
 io.on("connection", (socket) => {
-  /* ---------- HOST ---------- */
   socket.on("host:createRoom", (_, ack) => {
     if (!socketIsHost(socket)) return ack && ack({ ok: false, error: "Bạn cần HOST KEY để dùng chức năng Host." });
 
@@ -887,7 +952,6 @@ io.on("connection", (socket) => {
     ack && ack({ ok: true, ended: false });
   });
 
-  /* ---------- PLAYER ---------- */
   socket.on("player:join", ({ code, name }, ack) => {
     const room = rooms.get(code);
     if (!room) return ack && ack({ ok: false, error: "Mã phòng không đúng" });
@@ -917,6 +981,11 @@ io.on("connection", (socket) => {
 
     const q = QUIZ.questions[room.qIndex];
     if (!q) return ack && ack({ ok: false, error: "Không có câu hỏi" });
+
+    // CHƯA ĐẾN GIỜ BẮT ĐẦU (3s delay)
+    if (Date.now() < room.qStartAtMs) {
+      return ack && ack({ ok: false, error: "Chưa bắt đầu, chờ 3 giây..." });
+    }
 
     if (p.lastAnswer && p.lastAnswer.qIndex === room.qIndex) {
       return ack && ack({ ok: false, error: "Bạn đã trả lời câu này rồi" });
