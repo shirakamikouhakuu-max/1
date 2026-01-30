@@ -138,7 +138,8 @@ function safeQuestionPayload(room) {
     text: q.text,
     choices: q.choices,
     timeLimitSec: q.timeLimitSec,
-    startedAtMs: room.qStartAtMs,
+    startedAtMs: room.qStartAtMs,  // thời điểm bắt đầu TRẢ LỜI (server)
+    serverNowMs: Date.now(),       // ✅ để client tính delay chuẩn, không lệch do đồng hồ máy
     preDelayMs: PRE_DELAY_MS
   };
 }
@@ -152,7 +153,6 @@ function getTotalLeaderboard(room) {
   return list;
 }
 
-// Top 5 đúng & nhanh của câu vừa xong (7s chỉ là thời gian HIỂN THỊ popup)
 function getFastCorrectTop5(room) {
   const arr = [];
   for (const p of room.players.values()) {
@@ -294,7 +294,7 @@ function layout(title, body) {
 }
 
 /* ================== ROUTES ================== */
-app.get("/health", (_, res) => res.json({ ok: true }));
+app.get("/health", (_, res) => res.json({ ok: true, preDelayMs: PRE_DELAY_MS }));
 
 app.get("/", (_, res) => {
   res.send(layout("Quiz Realtime", `
@@ -327,6 +327,8 @@ app.get("/host-login", (req, res) => {
           <a class="btn" href="/play">Tôi là người chơi</a>
         </div>
       </form>
+      <hr/>
+      <p class="small">Vào nhanh: <b>/host?key=YOUR_KEY</b></p>
     </div>
   `));
 });
@@ -354,7 +356,7 @@ app.get("/host-logout", (req, res) => {
   return res.redirect("/play");
 });
 
-// Cho phép /host?key=... set cookie nhanh
+// /host?key=... set cookie nhanh
 app.get("/host", (req, res, next) => {
   const k = String(req.query.key || "").trim();
   if (k && k === HOST_KEY) {
@@ -443,9 +445,7 @@ app.get("/host", (req, res, next) => {
 
       var audio = $("qAudio");
       var soundBtn = $("soundBtn");
-      function stopAudio(){
-        try{ audio.pause(); audio.currentTime = 0; }catch(e){}
-      }
+      function stopAudio(){ try{ audio.pause(); audio.currentTime = 0; }catch(e){} }
       function playAudioAfter(delayMs){
         stopAudio();
         soundBtn.style.display = "none";
@@ -456,9 +456,7 @@ app.get("/host", (req, res, next) => {
         }, delayMs);
       }
       soundBtn.onclick = function(){
-        audio.play().then(function(){
-          soundBtn.style.display = "none";
-        }).catch(function(){});
+        audio.play().then(function(){ soundBtn.style.display = "none"; }).catch(function(){});
       };
 
       var dot = $("connDot");
@@ -484,7 +482,6 @@ app.get("/host", (req, res, next) => {
             return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + fmtMs(x.elapsedMs) + "</td><td>+" + (x.points || 0) + "</td></tr>";
           }).join("");
         }
-
         $("fastPopup").style.display = "flex";
         popupTimer = setTimeout(hidePopup, showMs || 7000);
       }
@@ -505,18 +502,14 @@ app.get("/host", (req, res, next) => {
           if (!resp || !resp.ok) return alert((resp && resp.error) || "Không tạo được phòng");
           code = resp.code;
           $("roomCode").textContent = code;
-          hidePopup();
-          stopAudio();
-          setButtons();
+          hidePopup(); stopAudio(); setButtons();
         });
       };
 
       $("btnStart").onclick = function(){
         socket.emit("host:start", { code: code }, function(resp){
           if (!resp || !resp.ok) return alert((resp && resp.error) || "Không thể bắt đầu");
-          hidePopup();
-          stopAudio();
-          setButtons();
+          hidePopup(); stopAudio(); setButtons();
         });
       };
 
@@ -529,9 +522,7 @@ app.get("/host", (req, res, next) => {
       $("btnNext").onclick = function(){
         socket.emit("host:next", { code: code }, function(resp){
           if (!resp || !resp.ok) return alert((resp && resp.error) || "Lỗi");
-          hidePopup();
-          stopAudio();
-          setButtons();
+          hidePopup(); stopAudio(); setButtons();
         });
       };
 
@@ -553,8 +544,7 @@ app.get("/host", (req, res, next) => {
       });
 
       socket.on("question:start", function(q){
-        hidePopup();
-        stopAudio();
+        hidePopup(); stopAudio();
 
         $("qText").textContent = q.text;
         $("qTime").textContent = String(q.timeLimitSec) + "s";
@@ -568,7 +558,8 @@ app.get("/host", (req, res, next) => {
                  '</div>';
         }).join("");
 
-        var delay = Math.max(0, q.startedAtMs - Date.now());
+        // ✅ tính delay theo serverNowMs (không lệch đồng hồ máy)
+        var delay = Math.max(0, q.startedAtMs - (q.serverNowMs || Date.now()));
         playAudioAfter(delay);
       });
 
@@ -687,9 +678,7 @@ app.get("/play", (_, res) => {
 
       var audio = $("qAudio");
       var soundBtn = $("soundBtn");
-      function stopAudio(){
-        try{ audio.pause(); audio.currentTime = 0; }catch(e){}
-      }
+      function stopAudio(){ try{ audio.pause(); audio.currentTime = 0; }catch(e){} }
       function playAudioAfter(delayMs){
         stopAudio();
         soundBtn.style.display = "none";
@@ -700,9 +689,7 @@ app.get("/play", (_, res) => {
         }, delayMs);
       }
       soundBtn.onclick = function(){
-        audio.play().then(function(){
-          soundBtn.style.display = "none";
-        }).catch(function(){});
+        audio.play().then(function(){ soundBtn.style.display = "none"; }).catch(function(){});
       };
 
       var dot = $("connDot");
@@ -734,17 +721,17 @@ app.get("/play", (_, res) => {
         });
       }
 
-      // hiển thị: "Chuẩn bị: ..." trong giai đoạn 0.5s (mượt hơn)
-      function setCountdown(startAtMs, timeLimitSec){
+      // đếm theo local-start (đã hiệu chỉnh delay) để luôn đúng 0.5s
+      function setCountdown(startLocalMs, timeLimitSec){
         clearTimer();
         function tick(){
           var now = Date.now();
-          if (now < startAtMs){
-            var prepMs = startAtMs - now;
+          if (now < startLocalMs){
+            var prepMs = startLocalMs - now;
             $("timeLeft").textContent = "Chuẩn bị: " + (prepMs/1000).toFixed(1) + "s";
             return;
           }
-          var elapsed = now - startAtMs;
+          var elapsed = now - startLocalMs;
           var remainMs = Math.max(0, timeLimitSec*1000 - elapsed);
           $("timeLeft").textContent = "Còn lại: " + (remainMs/1000).toFixed(1) + "s";
           if (remainMs <= 0) clearTimer();
@@ -765,7 +752,6 @@ app.get("/play", (_, res) => {
             return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + fmtMs(x.elapsedMs) + "</td><td>+" + (x.points || 0) + "</td></tr>";
           }).join("");
         }
-
         $("fastPopup").style.display = "flex";
         popupTimer = setTimeout(hidePopup, showMs || 7000);
       }
@@ -788,15 +774,12 @@ app.get("/play", (_, res) => {
       socket.on("question:start", function(q){
         if (!joined) return;
 
-        hidePopup();
-        stopAudio();
-        clearEnable();
-
+        hidePopup(); stopAudio(); clearEnable();
         myAnswered = false;
         $("feedback").textContent = "";
         $("qText").textContent = q.text;
 
-        // tạo đáp án (disable trong thời gian chuẩn bị 0.5s)
+        // tạo đáp án (disable trong prep)
         $("choices").innerHTML = q.choices.map(function(c,i){
           var letter = String.fromCharCode(65+i);
           return '<button class="choice" data-i="' + i + '" disabled>' +
@@ -805,13 +788,15 @@ app.get("/play", (_, res) => {
                  '</button>';
         }).join("");
 
-        var delay = Math.max(0, q.startedAtMs - Date.now());
+        // ✅ delay chuẩn theo serverNowMs
+        var delay = Math.max(0, q.startedAtMs - (q.serverNowMs || Date.now()));
+        var startLocalMs = Date.now() + delay;
 
-        // bật nhạc đúng lúc bắt đầu
+        // nhạc chạy đúng lúc bắt đầu
         playAudioAfter(delay);
 
-        // đếm thời gian: chuẩn bị -> 20s
-        setCountdown(q.startedAtMs, q.timeLimitSec);
+        // countdown đúng 0.5s + 20s
+        setCountdown(startLocalMs, q.timeLimitSec);
 
         // enable trả lời đúng lúc bắt đầu
         enableTimer = setTimeout(function(){
@@ -821,10 +806,9 @@ app.get("/play", (_, res) => {
         Array.prototype.forEach.call($("choices").querySelectorAll("button.choice"), function(btn){
           btn.onclick = function(){
             if (myAnswered) return;
-            if (Date.now() < q.startedAtMs) return;
+            if (btn.hasAttribute("disabled")) return;
 
             myAnswered = true;
-
             var choiceIndex = Number(btn.getAttribute("data-i"));
             setAnswerEnabled(false);
 
@@ -846,9 +830,7 @@ app.get("/play", (_, res) => {
       socket.on("question:end", function(p){
         if (!joined) return;
 
-        stopAudio();
-        clearEnable();
-        clearTimer();
+        stopAudio(); clearEnable(); clearTimer();
 
         var totalTop15 = p.totalTop15 || [];
         $("lbBody").innerHTML = totalTop15.map(function(x,i){
@@ -859,9 +841,7 @@ app.get("/play", (_, res) => {
       });
 
       socket.on("game:end", function(p){
-        stopAudio();
-        clearEnable();
-        clearTimer();
+        stopAudio(); clearEnable(); clearTimer();
 
         var totalTop15 = p.totalTop15 || [];
         $("lbBody").innerHTML = totalTop15.map(function(x,i){
@@ -880,6 +860,7 @@ function socketIsHost(socket) {
 }
 
 io.on("connection", (socket) => {
+  /* HOST */
   socket.on("host:createRoom", (_, ack) => {
     if (!socketIsHost(socket)) return ack && ack({ ok: false, error: "Bạn cần HOST KEY để dùng chức năng Host." });
 
@@ -948,6 +929,7 @@ io.on("connection", (socket) => {
     ack && ack({ ok: true, ended: false });
   });
 
+  /* PLAYER */
   socket.on("player:join", ({ code, name }, ack) => {
     const room = rooms.get(code);
     if (!room) return ack && ack({ ok: false, error: "Mã phòng không đúng" });
@@ -978,6 +960,7 @@ io.on("connection", (socket) => {
     const q = QUIZ.questions[room.qIndex];
     if (!q) return ack && ack({ ok: false, error: "Không có câu hỏi" });
 
+    // server vẫn chặn trả lời trước giờ bắt đầu (0.5s)
     if (Date.now() < room.qStartAtMs) {
       return ack && ack({ ok: false, error: "Chưa bắt đầu, chờ 0.5 giây..." });
     }
