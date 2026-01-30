@@ -65,7 +65,7 @@ function requireHost(req, res, next) {
 }
 
 /* ================== QUIZ ================== */
-const PRE_DELAY_MS = 500;     // chuyển câu mới -> 0.5s sau mới bắt đầu (mới phát nhạc + cho trả lời)
+const PRE_DELAY_MS = 500;      // ✅ CHUẨN BỊ 0.5s -> sau đó nhạc chạy + bắt đầu trả lời
 const POPUP_SHOW_MS = 7000;    // popup top 5 hiện 7s
 const MAX_POINTS = 1000;
 
@@ -105,11 +105,8 @@ function computePoints({ correct, elapsedMs, limitSec }) {
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 
-// PHỤC VỤ FILE NHẠC: đặt file ở public/audio/olympia.mp3
-app.use(
-  "/audio",
-  express.static(path.join(__dirname, "public", "audio"), { maxAge: "7d" })
-);
+// phục vụ file nhạc: public/audio/olympia.mp3
+app.use("/audio", express.static(path.join(__dirname, "public", "audio"), { maxAge: "7d" }));
 
 const server = http.createServer(app);
 const io = new Server(server);
@@ -141,7 +138,7 @@ function safeQuestionPayload(room) {
     text: q.text,
     choices: q.choices,
     timeLimitSec: q.timeLimitSec,
-    startedAtMs: room.qStartAtMs,  // thời điểm bắt đầu TRẢ LỜI (sau 3s)
+    startedAtMs: room.qStartAtMs,
     preDelayMs: PRE_DELAY_MS
   };
 }
@@ -155,6 +152,7 @@ function getTotalLeaderboard(room) {
   return list;
 }
 
+// Top 5 đúng & nhanh của câu vừa xong (7s chỉ là thời gian HIỂN THỊ popup)
 function getFastCorrectTop5(room) {
   const arr = [];
   for (const p of room.players.values()) {
@@ -163,8 +161,6 @@ function getFastCorrectTop5(room) {
       arr.push({ name: p.name, elapsedMs: a.elapsedMs, points: a.points });
     }
   }
-  arr.sort((x, y) => x.elapsedMs - y.elapsedMs || y.points - y.points || x.name.localeCompare(y.name));
-  // sửa nhỏ: y.points - x.points
   arr.sort((x, y) => x.elapsedMs - y.elapsedMs || y.points - x.points || x.name.localeCompare(y.name));
   return arr.slice(0, 5);
 }
@@ -176,7 +172,7 @@ function broadcast(room) {
 function startQuestion(room) {
   if (room.timer) clearTimeout(room.timer);
 
-  // bắt đầu trả lời sau 3s
+  // bắt đầu trả lời sau 0.5s
   room.qStartAtMs = Date.now() + PRE_DELAY_MS;
 
   for (const p of room.players.values()) p.lastAnswer = null;
@@ -185,7 +181,7 @@ function startQuestion(room) {
 
   const q = QUIZ.questions[room.qIndex];
 
-  // tổng thời gian: 3s chờ + 20s trả lời
+  // tổng thời gian: prep 0.5s + 20s trả lời
   room.timer = setTimeout(() => endQuestion(room), PRE_DELAY_MS + q.timeLimitSec * 1000);
 
   broadcast(room);
@@ -358,6 +354,7 @@ app.get("/host-logout", (req, res) => {
   return res.redirect("/play");
 });
 
+// Cho phép /host?key=... set cookie nhanh
 app.get("/host", (req, res, next) => {
   const k = String(req.query.key || "").trim();
   if (k && k === HOST_KEY) {
@@ -385,7 +382,7 @@ app.get("/host", (req, res, next) => {
           <div>
             <div class="small">Mã phòng</div>
             <div id="roomCode" class="bigcode">—</div>
-            <div class="small">Nhạc sẽ phát sau <b>3 giây</b>, thời gian trả lời <b>20 giây</b>.</div>
+            <div class="small">Chuẩn bị <b>0.5s</b> → nhạc chạy + bắt đầu trả lời <b>20s</b>.</div>
           </div>
           <div class="row">
             <span class="pill">Người chơi: <b id="playersCount">0</b></span>
@@ -645,7 +642,7 @@ app.get("/play", (_, res) => {
           <span class="pill">Hạng (tạm tính): <b id="rank">—</b></span>
           <span class="pill"><b id="timeLeft">—</b></span>
         </div>
-        <p class="small" style="margin:10px 0 0">Chuyển câu mới → chờ <b>3 giây</b> → nhạc chạy & bắt đầu trả lời <b>20 giây</b>.</p>
+        <p class="small" style="margin:10px 0 0">Chuẩn bị <b>0.5s</b> → nhạc chạy + bắt đầu trả lời <b>20s</b>.</p>
       </div>
 
       <div class="card">
@@ -737,22 +734,23 @@ app.get("/play", (_, res) => {
         });
       }
 
+      // hiển thị: "Chuẩn bị: ..." trong giai đoạn 0.5s (mượt hơn)
       function setCountdown(startAtMs, timeLimitSec){
         clearTimer();
         function tick(){
           var now = Date.now();
           if (now < startAtMs){
-            var prep = Math.ceil((startAtMs - now)/1000);
-            $("timeLeft").textContent = "Chuẩn bị: " + prep + "s";
+            var prepMs = startAtMs - now;
+            $("timeLeft").textContent = "Chuẩn bị: " + (prepMs/1000).toFixed(1) + "s";
             return;
           }
           var elapsed = now - startAtMs;
           var remainMs = Math.max(0, timeLimitSec*1000 - elapsed);
-          $("timeLeft").textContent = "Còn lại: " + String(Math.ceil(remainMs/1000)) + "s";
+          $("timeLeft").textContent = "Còn lại: " + (remainMs/1000).toFixed(1) + "s";
           if (remainMs <= 0) clearTimer();
         }
         tick();
-        timer = setInterval(tick, 200);
+        timer = setInterval(tick, 100);
       }
 
       var popupTimer = null;
@@ -798,7 +796,7 @@ app.get("/play", (_, res) => {
         $("feedback").textContent = "";
         $("qText").textContent = q.text;
 
-        // tạo đáp án (disable trong thời gian chờ 3s)
+        // tạo đáp án (disable trong thời gian chuẩn bị 0.5s)
         $("choices").innerHTML = q.choices.map(function(c,i){
           var letter = String.fromCharCode(65+i);
           return '<button class="choice" data-i="' + i + '" disabled>' +
@@ -807,13 +805,12 @@ app.get("/play", (_, res) => {
                  '</button>';
         }).join("");
 
-        // tính delay thực tế còn lại
         var delay = Math.max(0, q.startedAtMs - Date.now());
 
-        // bật nhạc sau delay
+        // bật nhạc đúng lúc bắt đầu
         playAudioAfter(delay);
 
-        // đếm thời gian: prep -> 20s
+        // đếm thời gian: chuẩn bị -> 20s
         setCountdown(q.startedAtMs, q.timeLimitSec);
 
         // enable trả lời đúng lúc bắt đầu
@@ -824,7 +821,6 @@ app.get("/play", (_, res) => {
         Array.prototype.forEach.call($("choices").querySelectorAll("button.choice"), function(btn){
           btn.onclick = function(){
             if (myAnswered) return;
-            // chặn nếu vẫn còn đang chuẩn bị
             if (Date.now() < q.startedAtMs) return;
 
             myAnswered = true;
@@ -982,9 +978,8 @@ io.on("connection", (socket) => {
     const q = QUIZ.questions[room.qIndex];
     if (!q) return ack && ack({ ok: false, error: "Không có câu hỏi" });
 
-    // CHƯA ĐẾN GIỜ BẮT ĐẦU (3s delay)
     if (Date.now() < room.qStartAtMs) {
-      return ack && ack({ ok: false, error: "Chưa bắt đầu, chờ 3 giây..." });
+      return ack && ack({ ok: false, error: "Chưa bắt đầu, chờ 0.5 giây..." });
     }
 
     if (p.lastAnswer && p.lastAnswer.qIndex === room.qIndex) {
