@@ -220,7 +220,7 @@ function endGame(room) {
   broadcast(room);
 }
 
-/* ================== HTML LAYOUT (Splash 1 lần + KHÔNG NHÁY) ================== */
+/* ================== HTML LAYOUT (Splash mỗi lần truy cập, click mới vào, không nháy) ================== */
 function layout(title, bodyHtml) {
   return `<!doctype html>
 <html lang="vi">
@@ -228,17 +228,6 @@ function layout(title, bodyHtml) {
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>${title}</title>
-
-<!-- ✅ QUAN TRỌNG: set class trước khi browser render để không bị nháy splash -->
-<script>
-(function(){
-  try{
-    if (localStorage.getItem('splash_shown_once_v1') === '1') {
-      document.documentElement.classList.add('splash-seen');
-    }
-  }catch(e){}
-})();
-</script>
 
 <style>
 :root{--bg:#0b1020;--text:#e7ecff;--muted:#a9b3d9;--line:#23305c;--btn:#2d3a6b;--btn2:#1f2a53;--good:#37d67a;--bad:#ff5a5f}
@@ -328,9 +317,9 @@ th{color:var(--muted);font-weight:800}
   z-index:1000000;
 }
 
-/* ✅ CHỐNG NHÁY:
+/* ✅ CHỐNG NHÁY + MỖI LẦN LOAD ĐỀU HIỆN SPLASH:
    - mặc định ẩn giao diện
-   - nếu đã xem splash -> hiện giao diện, ẩn splash ngay từ đầu */
+   - click splash => hiện giao diện */
 .container{ visibility: hidden; }
 .splash-seen .container{ visibility: visible; }
 .splash-seen #splash{ display:none !important; }
@@ -346,19 +335,18 @@ th{color:var(--muted);font-weight:800}
 <div class="container">${bodyHtml}</div>
 
 <script>
-// ✅ Splash chỉ hiển thị 1 lần, và KHÔNG NHÁY
+// ✅ Luôn hiện splash mỗi lần tải trang (không dùng localStorage)
+// ✅ Click mới vào, 1 lần duy nhất trong lần tải trang đó
 (function(){
   var splash = document.getElementById('splash');
   if(!splash) return;
 
-  // nếu đã seen (set ở HEAD) thì thôi
-  if (document.documentElement.classList.contains('splash-seen')) return;
-
   function hideSplash(){
-    try{ localStorage.setItem('splash_shown_once_v1', '1'); }catch(e){}
-    document.documentElement.classList.add('splash-seen'); // hiện giao diện ngay
+    document.documentElement.classList.add('splash-seen');
     splash.classList.add('hide');
-    setTimeout(function(){ if(splash) splash.remove(); }, 500);
+    setTimeout(function(){
+      if (splash) splash.remove();
+    }, 500);
   }
 
   splash.addEventListener('click', hideSplash);
@@ -714,7 +702,9 @@ app.get("/host", (req, res, next) => {
         });
       };
 
-      socket.on("players:count", function(p){ $("playersCount").textContent = String((p && p.count) || 0); });
+      socket.on("players:count", function(p){
+        $("playersCount").textContent = String((p && p.count) || 0);
+      });
 
       socket.on("room:state", function(s){
         state = s;
@@ -730,6 +720,7 @@ app.get("/host", (req, res, next) => {
 
       socket.on("question:start", function(q){
         hidePopup(); stopAudio(); stopTimer("qaCardHost");
+
         $("qText").textContent = q.text;
         $("qAnswered").textContent = "0";
 
