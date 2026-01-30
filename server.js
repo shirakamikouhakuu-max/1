@@ -103,6 +103,7 @@ function computePoints({ correct, elapsedMs, limitSec }) {
 
 /* ================== APP ================== */
 const app = express();
+app.set("trust proxy", 1);
 app.use(express.urlencoded({ extended: false }));
 
 app.use("/audio", express.static(path.join(__dirname, "public", "audio"), { maxAge: "7d" }));
@@ -220,7 +221,7 @@ function endGame(room) {
   broadcast(room);
 }
 
-/* ================== HTML LAYOUT (Splash mỗi lần truy cập, click mới vào, không nháy) ================== */
+/* ================== HTML LAYOUT (Splash chỉ 1 lần trong 1 tab) ================== */
 function layout(title, bodyHtml) {
   return `<!doctype html>
 <html lang="vi">
@@ -228,6 +229,18 @@ function layout(title, bodyHtml) {
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>${title}</title>
+
+<!-- ✅ Quyết định hiển thị splash ngay trong HEAD để không nháy -->
+<script>
+(function(){
+  try{
+    var KEY = 'splash_seen_session_v1'; // chỉ 1 lần trong 1 tab
+    if (sessionStorage.getItem(KEY) === '1') {
+      document.documentElement.classList.add('splash-seen');
+    }
+  }catch(e){}
+})();
+</script>
 
 <style>
 :root{--bg:#0b1020;--text:#e7ecff;--muted:#a9b3d9;--line:#23305c;--btn:#2d3a6b;--btn2:#1f2a53;--good:#37d67a;--bad:#ff5a5f}
@@ -317,11 +330,9 @@ th{color:var(--muted);font-weight:800}
   z-index:1000000;
 }
 
-/* ✅ CHỐNG NHÁY + MỖI LẦN LOAD ĐỀU HIỆN SPLASH:
-   - mặc định ẩn giao diện
-   - click splash => hiện giao diện */
-.container{ visibility: hidden; }
-.splash-seen .container{ visibility: visible; }
+/* ✅ Chống nháy + chỉ hiện splash 1 lần */
+.container{ visibility:hidden; }
+.splash-seen .container{ visibility:visible; }
 .splash-seen #splash{ display:none !important; }
 </style>
 </head>
@@ -335,18 +346,18 @@ th{color:var(--muted);font-weight:800}
 <div class="container">${bodyHtml}</div>
 
 <script>
-// ✅ Luôn hiện splash mỗi lần tải trang (không dùng localStorage)
-// ✅ Click mới vào, 1 lần duy nhất trong lần tải trang đó
 (function(){
   var splash = document.getElementById('splash');
   if(!splash) return;
 
+  // nếu đã "seen" trong tab này thì HEAD đã ẩn splash rồi
+  if (document.documentElement.classList.contains('splash-seen')) return;
+
   function hideSplash(){
+    try{ sessionStorage.setItem('splash_seen_session_v1', '1'); }catch(e){}
     document.documentElement.classList.add('splash-seen');
     splash.classList.add('hide');
-    setTimeout(function(){
-      if (splash) splash.remove();
-    }, 500);
+    setTimeout(function(){ if(splash) splash.remove(); }, 500);
   }
 
   splash.addEventListener('click', hideSplash);
@@ -702,9 +713,7 @@ app.get("/host", (req, res, next) => {
         });
       };
 
-      socket.on("players:count", function(p){
-        $("playersCount").textContent = String((p && p.count) || 0);
-      });
+      socket.on("players:count", function(p){ $("playersCount").textContent = String((p && p.count) || 0); });
 
       socket.on("room:state", function(s){
         state = s;
@@ -720,7 +729,6 @@ app.get("/host", (req, res, next) => {
 
       socket.on("question:start", function(q){
         hidePopup(); stopAudio(); stopTimer("qaCardHost");
-
         $("qText").textContent = q.text;
         $("qAnswered").textContent = "0";
 
