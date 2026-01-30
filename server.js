@@ -1,14 +1,3 @@
-// server.js (HOÀN CHỈNH)
-// - Splash ảnh full màn hình: CHỈ click mới vào (không tự tắt)
-// - Prep 0.5s rồi nhạc chạy + bắt đầu trả lời
-// - Thời gian trả lời: 22 giây
-// - Popup Top 5 đúng & nhanh: hiện 7s sau khi kết thúc mỗi câu
-// - Bảng tổng điểm Top 15
-// - Host Key bảo vệ /host
-//
-// ✅ Đặt file ảnh splash tại: public/img/splash.png
-// ✅ Đặt nhạc tại: public/audio/olympia.mp3
-
 const express = require("express");
 const http = require("http");
 const crypto = require("crypto");
@@ -150,8 +139,8 @@ function safeQuestionPayload(room) {
     text: q.text,
     choices: q.choices,
     timeLimitSec: q.timeLimitSec,
-    startedAtMs: room.qStartAtMs, // server start answering time
-    serverNowMs: Date.now(),      // ✅ chống lệch đồng hồ client
+    startedAtMs: room.qStartAtMs,
+    serverNowMs: Date.now(),
     preDelayMs: PRE_DELAY_MS
   };
 }
@@ -173,7 +162,7 @@ function getFastCorrectTop5(room) {
       arr.push({ name: p.name, elapsedMs: a.elapsedMs, points: a.points });
     }
   }
-  arr.sort((x, y) => x.elapsedMs - y.elapsedMs || y.points - x.points || x.name.localeCompare(y.name));
+  arr.sort((x, y) => x.elapsedMs - y.elapsedMs || y.points - y.points || x.name.localeCompare(y.name));
   return arr.slice(0, 5);
 }
 
@@ -184,10 +173,8 @@ function broadcast(room) {
 function startQuestion(room) {
   if (room.timer) clearTimeout(room.timer);
 
-  // start answering after 0.5s
   room.qStartAtMs = Date.now() + PRE_DELAY_MS;
 
-  // clear last answer for new question
   for (const p of room.players.values()) p.lastAnswer = null;
 
   io.to(room.code).emit("question:start", safeQuestionPayload(room));
@@ -268,24 +255,27 @@ function layout(title, body) {
     .choices{display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px}
     @media(min-width:720px){.choices{grid-template-columns:1fr 1fr}}
 
-    /* ĐÁP ÁN TƯƠNG PHẢN CAO */
+    /* ĐÁP ÁN: nền màu (JS set), chữ trắng */
     .choice{
       display:flex;align-items:center;gap:12px;
       padding:14px 14px;border-radius:14px;
-      border:1px solid rgba(231,236,255,.22);
-      background:rgba(0,0,0,.32);color:var(--text);
+      border:1px solid rgba(255,255,255,.32);
+      background:#1b263b;
+      color:#fff;
       cursor:pointer;text-align:left;
+      transition:filter .15s ease, transform .05s ease;
     }
-    .choice:hover{background:rgba(0,0,0,.42);border-color: rgba(231,236,255,.38);}
-    .choice[disabled]{opacity:.78;cursor:not-allowed;}
+    .choice:hover{ filter:brightness(1.08); }
+    .choice:active{ transform:translateY(1px); }
+    .choice[disabled]{opacity:.78;cursor:not-allowed;filter:none;}
     .choice .opt{
       width:34px;height:34px;border-radius:10px;
       display:flex;align-items:center;justify-content:center;
       font-weight:900;letter-spacing:.5px;
       background:rgba(231,236,255,.95);color:#0b1020;
-      border:1px solid rgba(0,0,0,.18);flex:0 0 auto;
+      border:1px solid rgba(0,0,0,.18);flex:0 0 auto
     }
-    .choice .txt{flex:1;font-weight:700;line-height:1.25;}
+    .choice .txt{flex:1;font-weight:700;line-height:1.25;color:#fff}
 
     .badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:12px;border:1px solid var(--line);background:rgba(0,0,0,.14);color:var(--muted)}
     .good{color:var(--good)} .bad{color:var(--bad)}
@@ -295,6 +285,16 @@ function layout(title, body) {
 
     .overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;padding:16px;z-index:9999}
     .modal{max-width:720px;width:100%}
+
+    /* ===== TIMER chạy quanh khung card câu hỏi ===== */
+    .qaCard{ position:relative; overflow:hidden; }
+    .timer-svg{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+    .timer-track{ fill:none; stroke:rgba(255,255,255,.18); stroke-width:6; }
+    .timer-prog{
+      fill:none; stroke:rgba(255, 215, 0, .95); stroke-width:6;
+      stroke-linecap:round; stroke-linejoin:round;
+      opacity:0;
+    }
 
     /* ===== Splash screen: click mới vào ===== */
     .splash{
@@ -306,7 +306,7 @@ function layout(title, body) {
     }
     .splash img{
       width:100%; height:100%;
-      object-fit:cover; /* nếu muốn không crop: đổi cover -> contain */
+      object-fit:cover;
       display:block;
     }
     .splash.hide{
@@ -341,15 +341,10 @@ function layout(title, body) {
     (function(){
       var splash = document.getElementById("splash");
       if(!splash) return;
-
       function hideSplash(){
         splash.classList.add("hide");
-        setTimeout(function(){
-          splash.remove();
-        }, 500);
+        setTimeout(function(){ splash.remove(); }, 500);
       }
-
-      // ✅ CHỈ tắt khi click (không tự tắt)
       splash.addEventListener("click", hideSplash);
     })();
   </script>
@@ -420,7 +415,6 @@ app.get("/host-logout", (req, res) => {
   return res.redirect("/play");
 });
 
-// /host?key=... set cookie nhanh
 app.get("/host", (req, res, next) => {
   const k = String(req.query.key || "").trim();
   if (k && k === HOST_KEY) {
@@ -448,7 +442,7 @@ app.get("/host", (req, res, next) => {
           <div>
             <div class="small">Mã phòng</div>
             <div id="roomCode" class="bigcode">—</div>
-            <div class="small">Chuẩn bị <b>0.5s</b> → nhạc chạy + bắt đầu trả lời <b>22s</b>.</div>
+            <div class="small">Prep <b>0.5s</b> → chạy timer viền <b>22s</b>.</div>
           </div>
           <div class="row">
             <span class="pill">Người chơi: <b id="playersCount">0</b></span>
@@ -464,11 +458,10 @@ app.get("/host", (req, res, next) => {
         </div>
       </div>
 
-      <div class="card">
+      <div id="qaCardHost" class="card qaCard">
         <div class="small">Câu hỏi đang chạy</div>
         <h2 id="qText" style="margin:6px 0 0;font-size:18px">—</h2>
         <div class="row" style="margin-top:8px">
-          <span class="badge">Thời gian: <b id="qTime">—</b></span>
           <span class="badge">Đã trả lời: <b id="qAnswered">0</b></span>
         </div>
         <div id="choices" class="choices"></div>
@@ -506,6 +499,134 @@ app.get("/host", (req, res, next) => {
         });
       };
       function fmtMs(ms){ return (ms/1000).toFixed(2) + "s"; }
+
+      // ===== Random màu cho 4 đáp án (tối, chữ trắng rõ, không trùng) =====
+      var ANSWER_COLOR_POOL = [
+        "#1D3557","#0B3D91","#264653","#283618",
+        "#2F3E46","#3A0CA3","#5A189A","#6A040F",
+        "#004E64","#1B263B","#2D1E2F","#006D77"
+      ];
+      function shuffle(arr){
+        var a = arr.slice();
+        for (var i = a.length - 1; i > 0; i--) {
+          var j = Math.floor(Math.random() * (i + 1));
+          var t = a[i]; a[i] = a[j]; a[j] = t;
+        }
+        return a;
+      }
+      function pickAnswerColors(n){
+        var pool = shuffle(ANSWER_COLOR_POOL);
+        while (pool.length < n) pool = pool.concat(shuffle(ANSWER_COLOR_POOL));
+        return pool.slice(0, n);
+      }
+      function applyAnswerColors(containerId){
+        var wrap = $(containerId);
+        if (!wrap) return;
+        var nodes = wrap.querySelectorAll(".choice");
+        var colors = pickAnswerColors(nodes.length);
+        nodes.forEach(function(node, idx){
+          node.style.background = colors[idx];
+          node.style.borderColor = "rgba(255,255,255,.32)";
+        });
+      }
+
+      // ===== Timer chạy quanh khung card (SVG rect dash) =====
+      function ensureTimer(cardId){
+        var card = $(cardId);
+        if (!card) return null;
+        if (card.__timerObj) return card.__timerObj;
+
+        var ns = "http://www.w3.org/2000/svg";
+        var svg = document.createElementNS(ns, "svg");
+        svg.setAttribute("class", "timer-svg");
+
+        var track = document.createElementNS(ns, "rect");
+        track.setAttribute("class", "timer-track");
+
+        var prog = document.createElementNS(ns, "rect");
+        prog.setAttribute("class", "timer-prog");
+
+        svg.appendChild(track);
+        svg.appendChild(prog);
+        card.appendChild(svg);
+
+        var obj = { card: card, svg: svg, track: track, prog: prog, len: 0, raf: 0 };
+
+        obj.resize = function(){
+          var w = card.clientWidth;
+          var h = card.clientHeight;
+          var sw = 6;
+          var r = 16;
+          var rx = Math.max(0, r - sw/2);
+
+          svg.setAttribute("viewBox", "0 0 " + w + " " + h);
+
+          track.setAttribute("x", sw/2);
+          track.setAttribute("y", sw/2);
+          track.setAttribute("width", Math.max(0, w - sw));
+          track.setAttribute("height", Math.max(0, h - sw));
+          track.setAttribute("rx", rx);
+          track.setAttribute("ry", rx);
+
+          prog.setAttribute("x", sw/2);
+          prog.setAttribute("y", sw/2);
+          prog.setAttribute("width", Math.max(0, w - sw));
+          prog.setAttribute("height", Math.max(0, h - sw));
+          prog.setAttribute("rx", rx);
+          prog.setAttribute("ry", rx);
+
+          try {
+            obj.len = prog.getTotalLength();
+            prog.style.strokeDasharray = String(obj.len);
+          } catch(e) {}
+        };
+
+        window.addEventListener("resize", function(){ obj.resize(); });
+        obj.resize();
+
+        card.__timerObj = obj;
+        return obj;
+      }
+
+      function startTimer(cardId, startAtMs, durationMs){
+        var t = ensureTimer(cardId);
+        if (!t || !t.len) return;
+
+        t.resize();
+        if (t.raf) cancelAnimationFrame(t.raf);
+
+        var len = t.len;
+        t.prog.style.opacity = "1";
+        t.prog.style.strokeDasharray = String(len);
+        t.prog.style.strokeDashoffset = String(len);
+
+        function step(){
+          var now = Date.now();
+          var p = (now - startAtMs) / durationMs;
+
+          if (p < 0) {
+            t.prog.style.strokeDashoffset = String(len);
+            t.raf = requestAnimationFrame(step);
+            return;
+          }
+
+          p = Math.max(0, Math.min(1, p));
+          var off = len * (1 - p);
+          t.prog.style.strokeDashoffset = String(off);
+
+          if (p < 1) t.raf = requestAnimationFrame(step);
+        }
+
+        t.raf = requestAnimationFrame(step);
+      }
+
+      function stopTimer(cardId){
+        var t = ensureTimer(cardId);
+        if (!t) return;
+        if (t.raf) cancelAnimationFrame(t.raf);
+        t.raf = 0;
+        t.prog.style.opacity = "0";
+      }
 
       var audio = $("qAudio");
       var soundBtn = $("soundBtn");
@@ -566,14 +687,14 @@ app.get("/host", (req, res, next) => {
           if (!resp || !resp.ok) return alert((resp && resp.error) || "Không tạo được phòng");
           code = resp.code;
           $("roomCode").textContent = code;
-          hidePopup(); stopAudio(); setButtons();
+          hidePopup(); stopAudio(); stopTimer("qaCardHost"); setButtons();
         });
       };
 
       $("btnStart").onclick = function(){
         socket.emit("host:start", { code: code }, function(resp){
           if (!resp || !resp.ok) return alert((resp && resp.error) || "Không thể bắt đầu");
-          hidePopup(); stopAudio(); setButtons();
+          hidePopup(); stopAudio(); stopTimer("qaCardHost"); setButtons();
         });
       };
 
@@ -586,7 +707,7 @@ app.get("/host", (req, res, next) => {
       $("btnNext").onclick = function(){
         socket.emit("host:next", { code: code }, function(resp){
           if (!resp || !resp.ok) return alert((resp && resp.error) || "Lỗi");
-          hidePopup(); stopAudio(); setButtons();
+          hidePopup(); stopAudio(); stopTimer("qaCardHost"); setButtons();
         });
       };
 
@@ -608,10 +729,9 @@ app.get("/host", (req, res, next) => {
       });
 
       socket.on("question:start", function(q){
-        hidePopup(); stopAudio();
+        hidePopup(); stopAudio(); stopTimer("qaCardHost");
 
         $("qText").textContent = q.text;
-        $("qTime").textContent = String(q.timeLimitSec) + "s";
         $("qAnswered").textContent = "0";
 
         $("choices").innerHTML = q.choices.map(function(c,i){
@@ -622,13 +742,21 @@ app.get("/host", (req, res, next) => {
                  '</div>';
         }).join("");
 
-        // ✅ delay theo serverNowMs (không lệch đồng hồ máy)
+        applyAnswerColors("choices");
+
+        // start timer đúng thời gian trả lời (không hiển thị giây)
         var delay = Math.max(0, q.startedAtMs - (q.serverNowMs || Date.now()));
+        var startLocalMs = Date.now() + delay;
+
+        // nhạc chạy từ lúc bắt đầu trả lời
         playAudioAfter(delay);
+
+        // timer viền chạy đúng 22s
+        startTimer("qaCardHost", startLocalMs, q.timeLimitSec * 1000);
       });
 
       socket.on("question:end", function(p){
-        stopAudio();
+        stopAudio(); stopTimer("qaCardHost");
 
         var totalTop15 = p.totalTop15 || [];
         $("lbBody").innerHTML = totalTop15.map(function(x,i){
@@ -636,19 +764,10 @@ app.get("/host", (req, res, next) => {
         }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có dữ liệu.</td></tr>";
 
         showPopup(p.fastTop5 || [], p.popupShowMs || 7000);
-
-        var correctIndex = p.correctIndex;
-        var nodes = $("choices").querySelectorAll(".choice");
-        nodes.forEach(function(node, idx){
-          if (idx === correctIndex) {
-            var txt = node.querySelector(".txt");
-            if (txt) txt.innerHTML = txt.innerHTML + ' <span class="badge good">✔ đúng</span>';
-          }
-        });
       });
 
       socket.on("game:end", function(p){
-        stopAudio();
+        stopAudio(); stopTimer("qaCardHost");
         var totalTop15 = p.totalTop15 || [];
         $("lbBody").innerHTML = totalTop15.map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
@@ -695,12 +814,11 @@ app.get("/play", (_, res) => {
         <div class="row">
           <span class="pill">Điểm: <b id="score">0</b></span>
           <span class="pill">Hạng (tạm tính): <b id="rank">—</b></span>
-          <span class="pill"><b id="timeLeft">—</b></span>
         </div>
-        <p class="small" style="margin:10px 0 0">Chuẩn bị <b>0.5s</b> → nhạc chạy + bắt đầu trả lời <b>22s</b>.</p>
+        <p class="small" style="margin:10px 0 0">Không hiển thị giây — xem thanh thời gian chạy quanh khung.</p>
       </div>
 
-      <div class="card">
+      <div id="qaCardPlay" class="card qaCard">
         <div class="small">Câu hỏi</div>
         <h2 id="qText" style="margin:6px 0 0;font-size:18px">—</h2>
         <div id="choices" class="choices"></div>
@@ -740,6 +858,134 @@ app.get("/play", (_, res) => {
       };
       function fmtMs(ms){ return (ms/1000).toFixed(2) + "s"; }
 
+      // ===== Random màu cho 4 đáp án (tối, chữ trắng rõ, không trùng) =====
+      var ANSWER_COLOR_POOL = [
+        "#1D3557","#0B3D91","#264653","#283618",
+        "#2F3E46","#3A0CA3","#5A189A","#6A040F",
+        "#004E64","#1B263B","#2D1E2F","#006D77"
+      ];
+      function shuffle(arr){
+        var a = arr.slice();
+        for (var i = a.length - 1; i > 0; i--) {
+          var j = Math.floor(Math.random() * (i + 1));
+          var t = a[i]; a[i] = a[j]; a[j] = t;
+        }
+        return a;
+      }
+      function pickAnswerColors(n){
+        var pool = shuffle(ANSWER_COLOR_POOL);
+        while (pool.length < n) pool = pool.concat(shuffle(ANSWER_COLOR_POOL));
+        return pool.slice(0, n);
+      }
+      function applyAnswerColors(containerId){
+        var wrap = $(containerId);
+        if (!wrap) return;
+        var nodes = wrap.querySelectorAll(".choice");
+        var colors = pickAnswerColors(nodes.length);
+        nodes.forEach(function(node, idx){
+          node.style.background = colors[idx];
+          node.style.borderColor = "rgba(255,255,255,.32)";
+        });
+      }
+
+      // ===== Timer chạy quanh khung card (SVG rect dash) =====
+      function ensureTimer(cardId){
+        var card = $(cardId);
+        if (!card) return null;
+        if (card.__timerObj) return card.__timerObj;
+
+        var ns = "http://www.w3.org/2000/svg";
+        var svg = document.createElementNS(ns, "svg");
+        svg.setAttribute("class", "timer-svg");
+
+        var track = document.createElementNS(ns, "rect");
+        track.setAttribute("class", "timer-track");
+
+        var prog = document.createElementNS(ns, "rect");
+        prog.setAttribute("class", "timer-prog");
+
+        svg.appendChild(track);
+        svg.appendChild(prog);
+        card.appendChild(svg);
+
+        var obj = { card: card, svg: svg, track: track, prog: prog, len: 0, raf: 0 };
+
+        obj.resize = function(){
+          var w = card.clientWidth;
+          var h = card.clientHeight;
+          var sw = 6;
+          var r = 16;
+          var rx = Math.max(0, r - sw/2);
+
+          svg.setAttribute("viewBox", "0 0 " + w + " " + h);
+
+          track.setAttribute("x", sw/2);
+          track.setAttribute("y", sw/2);
+          track.setAttribute("width", Math.max(0, w - sw));
+          track.setAttribute("height", Math.max(0, h - sw));
+          track.setAttribute("rx", rx);
+          track.setAttribute("ry", rx);
+
+          prog.setAttribute("x", sw/2);
+          prog.setAttribute("y", sw/2);
+          prog.setAttribute("width", Math.max(0, w - sw));
+          prog.setAttribute("height", Math.max(0, h - sw));
+          prog.setAttribute("rx", rx);
+          prog.setAttribute("ry", rx);
+
+          try {
+            obj.len = prog.getTotalLength();
+            prog.style.strokeDasharray = String(obj.len);
+          } catch(e) {}
+        };
+
+        window.addEventListener("resize", function(){ obj.resize(); });
+        obj.resize();
+
+        card.__timerObj = obj;
+        return obj;
+      }
+
+      function startTimer(cardId, startAtMs, durationMs){
+        var t = ensureTimer(cardId);
+        if (!t || !t.len) return;
+
+        t.resize();
+        if (t.raf) cancelAnimationFrame(t.raf);
+
+        var len = t.len;
+        t.prog.style.opacity = "1";
+        t.prog.style.strokeDasharray = String(len);
+        t.prog.style.strokeDashoffset = String(len);
+
+        function step(){
+          var now = Date.now();
+          var p = (now - startAtMs) / durationMs;
+
+          if (p < 0) {
+            t.prog.style.strokeDashoffset = String(len);
+            t.raf = requestAnimationFrame(step);
+            return;
+          }
+
+          p = Math.max(0, Math.min(1, p));
+          var off = len * (1 - p);
+          t.prog.style.strokeDashoffset = String(off);
+
+          if (p < 1) t.raf = requestAnimationFrame(step);
+        }
+
+        t.raf = requestAnimationFrame(step);
+      }
+
+      function stopTimer(cardId){
+        var t = ensureTimer(cardId);
+        if (!t) return;
+        if (t.raf) cancelAnimationFrame(t.raf);
+        t.raf = 0;
+        t.prog.style.opacity = "0";
+      }
+
       var audio = $("qAudio");
       var soundBtn = $("soundBtn");
       function stopAudio(){ try{ audio.pause(); audio.currentTime = 0; }catch(e){} }
@@ -769,11 +1015,9 @@ app.get("/play", (_, res) => {
 
       var joined = false;
       var roomCode = null;
-      var timer = null;
       var myAnswered = false;
       var enableTimer = null;
 
-      function clearTimer(){ if (timer) clearInterval(timer); timer = null; }
       function clearEnable(){ if (enableTimer) clearTimeout(enableTimer); enableTimer = null; }
 
       function setAnswerEnabled(enabled){
@@ -783,24 +1027,6 @@ app.get("/play", (_, res) => {
             else b.setAttribute("disabled","disabled");
           }
         });
-      }
-
-      function setCountdown(startLocalMs, timeLimitSec){
-        clearTimer();
-        function tick(){
-          var now = Date.now();
-          if (now < startLocalMs){
-            var prepMs = startLocalMs - now;
-            $("timeLeft").textContent = "Chuẩn bị: " + (prepMs/1000).toFixed(1) + "s";
-            return;
-          }
-          var elapsed = now - startLocalMs;
-          var remainMs = Math.max(0, timeLimitSec*1000 - elapsed);
-          $("timeLeft").textContent = "Còn lại: " + (remainMs/1000).toFixed(1) + "s";
-          if (remainMs <= 0) clearTimer();
-        }
-        tick();
-        timer = setInterval(tick, 100);
       }
 
       var popupTimer = null;
@@ -837,7 +1063,7 @@ app.get("/play", (_, res) => {
       socket.on("question:start", function(q){
         if (!joined) return;
 
-        hidePopup(); stopAudio(); clearEnable();
+        hidePopup(); stopAudio(); stopTimer("qaCardPlay"); clearEnable();
         myAnswered = false;
         $("feedback").textContent = "";
         $("qText").textContent = q.text;
@@ -850,12 +1076,19 @@ app.get("/play", (_, res) => {
                  '</button>';
         }).join("");
 
+        applyAnswerColors("choices");
+
+        // delay chuẩn theo serverNowMs (không hiển thị giây)
         var delay = Math.max(0, q.startedAtMs - (q.serverNowMs || Date.now()));
         var startLocalMs = Date.now() + delay;
 
+        // nhạc chạy từ lúc bắt đầu trả lời
         playAudioAfter(delay);
-        setCountdown(startLocalMs, q.timeLimitSec);
 
+        // timer viền chạy đúng 22s
+        startTimer("qaCardPlay", startLocalMs, q.timeLimitSec * 1000);
+
+        // chỉ cho bấm đáp án khi bắt đầu trả lời
         enableTimer = setTimeout(function(){
           setAnswerEnabled(true);
         }, delay);
@@ -887,7 +1120,7 @@ app.get("/play", (_, res) => {
       socket.on("question:end", function(p){
         if (!joined) return;
 
-        stopAudio(); clearEnable(); clearTimer();
+        stopAudio(); stopTimer("qaCardPlay"); clearEnable();
 
         var totalTop15 = p.totalTop15 || [];
         $("lbBody").innerHTML = totalTop15.map(function(x,i){
@@ -898,7 +1131,7 @@ app.get("/play", (_, res) => {
       });
 
       socket.on("game:end", function(p){
-        stopAudio(); clearEnable(); clearTimer();
+        stopAudio(); stopTimer("qaCardPlay"); clearEnable();
 
         var totalTop15 = p.totalTop15 || [];
         $("lbBody").innerHTML = totalTop15.map(function(x,i){
@@ -1063,4 +1296,4 @@ io.on("connection", (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, "0.0.0.0", () => console.log("Realtime quiz running on port", PORT))
+server.listen(PORT, "0.0.0.0", () => console.log("Realtime quiz running on port", PORT));
