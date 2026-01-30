@@ -1,3 +1,14 @@
+// server.js (HOÀN CHỈNH)
+// - Splash ảnh full màn hình: CHỈ click mới vào (không tự tắt)
+// - Prep 0.5s rồi nhạc chạy + bắt đầu trả lời
+// - Thời gian trả lời: 22 giây
+// - Popup Top 5 đúng & nhanh: hiện 7s sau khi kết thúc mỗi câu
+// - Bảng tổng điểm Top 15
+// - Host Key bảo vệ /host
+//
+// ✅ Đặt file ảnh splash tại: public/img/splash.png
+// ✅ Đặt nhạc tại: public/audio/olympia.mp3
+
 const express = require("express");
 const http = require("http");
 const crypto = require("crypto");
@@ -105,11 +116,9 @@ function computePoints({ correct, elapsedMs, limitSec }) {
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 
-// phục vụ file nhạc: public/audio/olympia.mp3
-app.use(
-  "/audio",
-  express.static(path.join(__dirname, "public", "audio"), { maxAge: "7d" })
-);
+// ✅ static audio + image
+app.use("/audio", express.static(path.join(__dirname, "public", "audio"), { maxAge: "7d" }));
+app.use("/img", express.static(path.join(__dirname, "public", "img"), { maxAge: "7d" }));
 
 const server = http.createServer(app);
 const io = new Server(server);
@@ -141,8 +150,8 @@ function safeQuestionPayload(room) {
     text: q.text,
     choices: q.choices,
     timeLimitSec: q.timeLimitSec,
-    startedAtMs: room.qStartAtMs, // thời điểm bắt đầu TRẢ LỜI (server)
-    serverNowMs: Date.now(),      // ✅ client tính delay chuẩn, không lệch do đồng hồ máy
+    startedAtMs: room.qStartAtMs, // server start answering time
+    serverNowMs: Date.now(),      // ✅ chống lệch đồng hồ client
     preDelayMs: PRE_DELAY_MS
   };
 }
@@ -175,18 +184,16 @@ function broadcast(room) {
 function startQuestion(room) {
   if (room.timer) clearTimeout(room.timer);
 
+  // start answering after 0.5s
   room.qStartAtMs = Date.now() + PRE_DELAY_MS;
 
+  // clear last answer for new question
   for (const p of room.players.values()) p.lastAnswer = null;
 
   io.to(room.code).emit("question:start", safeQuestionPayload(room));
 
   const q = QUIZ.questions[room.qIndex];
-
-  room.timer = setTimeout(
-    () => endQuestion(room),
-    PRE_DELAY_MS + q.timeLimitSec * 1000
-  );
+  room.timer = setTimeout(() => endQuestion(room), PRE_DELAY_MS + q.timeLimitSec * 1000);
 
   broadcast(room);
 }
@@ -288,11 +295,64 @@ function layout(title, body) {
 
     .overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;padding:16px;z-index:9999}
     .modal{max-width:720px;width:100%}
+
+    /* ===== Splash screen: click mới vào ===== */
+    .splash{
+      position:fixed; inset:0;
+      background:#000;
+      display:flex; align-items:center; justify-content:center;
+      z-index:999999;
+      padding:0;
+    }
+    .splash img{
+      width:100%; height:100%;
+      object-fit:cover; /* nếu muốn không crop: đổi cover -> contain */
+      display:block;
+    }
+    .splash.hide{
+      opacity:0;
+      pointer-events:none;
+      transition:opacity .45s ease;
+    }
+    .splash-hint{
+      position:fixed;
+      bottom:14px; left:50%;
+      transform:translateX(-50%);
+      background:rgba(0,0,0,.55);
+      border:1px solid rgba(255,255,255,.25);
+      color:#fff;
+      padding:6px 10px;
+      border-radius:999px;
+      font-size:12px;
+      z-index:1000000;
+    }
   </style>
 </head>
 <body>
+  <div id="splash" class="splash">
+    <img src="/img/splash.png" alt="Splash"/>
+    <div class="splash-hint">Bấm để vào</div>
+  </div>
+
   <script src="/socket.io/socket.io.js"></script>
   <div class="container">${body}</div>
+
+  <script>
+    (function(){
+      var splash = document.getElementById("splash");
+      if(!splash) return;
+
+      function hideSplash(){
+        splash.classList.add("hide");
+        setTimeout(function(){
+          splash.remove();
+        }, 500);
+      }
+
+      // ✅ CHỈ tắt khi click (không tự tắt)
+      splash.addEventListener("click", hideSplash);
+    })();
+  </script>
 </body>
 </html>`;
 }
@@ -725,7 +785,6 @@ app.get("/play", (_, res) => {
         });
       }
 
-      // đếm theo local-start (đã hiệu chỉnh delay) để luôn đúng 0.5s
       function setCountdown(startLocalMs, timeLimitSec){
         clearTimer();
         function tick(){
@@ -1004,4 +1063,4 @@ io.on("connection", (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, "0.0.0.0", () => console.log("Realtime quiz running on port", PORT));
+server.listen(PORT, "0.0.0.0", () => console.log("Realtime quiz running on port", PORT))
