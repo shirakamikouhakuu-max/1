@@ -65,8 +65,8 @@ function requireHost(req, res, next) {
 }
 
 /* ================== QUIZ ================== */
-const PRE_DELAY_MS = 500;      // ✅ chuẩn bị 0.5s -> sau đó nhạc chạy + bắt đầu trả lời
-const POPUP_SHOW_MS = 7000;    // popup top 5 hiện 7s
+const PRE_DELAY_MS = 500;      // chuẩn bị 0.5s
+const POPUP_SHOW_MS = 7000;    // popup top5 hiện 7s
 const MAX_POINTS = 1000;
 
 const QUIZ = {
@@ -105,7 +105,7 @@ function computePoints({ correct, elapsedMs, limitSec }) {
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 
-// ✅ static audio + image
+// static audio + image
 app.use("/audio", express.static(path.join(__dirname, "public", "audio"), { maxAge: "7d" }));
 app.use("/img", express.static(path.join(__dirname, "public", "img"), { maxAge: "7d" }));
 
@@ -162,7 +162,8 @@ function getFastCorrectTop5(room) {
       arr.push({ name: p.name, elapsedMs: a.elapsedMs, points: a.points });
     }
   }
-  arr.sort((x, y) => x.elapsedMs - y.elapsedMs || y.points - y.points || x.name.localeCompare(y.name));
+  // ✅ sửa sort đúng
+  arr.sort((x, y) => x.elapsedMs - y.elapsedMs || y.points - x.points || x.name.localeCompare(y.name));
   return arr.slice(0, 5);
 }
 
@@ -221,151 +222,137 @@ function endGame(room) {
   broadcast(room);
 }
 
-/* ================== HTML LAYOUT ================== */
-function layout(title, body) {
+/* ================== HTML LAYOUT (đã fix backtick 100%) ================== */
+function layout(title, bodyHtml) {
   return `<!doctype html>
 <html lang="vi">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>${title}</title>
-  <style>
-    :root{--bg:#0b1020;--text:#e7ecff;--muted:#a9b3d9;--line:#23305c;--btn:#2d3a6b;--btn2:#1f2a53;--good:#37d67a;--bad:#ff5a5f}
-    *{box-sizing:border-box;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-    body{margin:0;background:radial-gradient(1200px 800px at 20% 10%, #1a2550 0%, var(--bg) 55%);color:var(--text)}
-    a{color:var(--text);text-decoration:none}
-    .container{max-width:980px;margin:0 auto;padding:24px}
-    .header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
-    h1{margin:0;font-size:22px}
-    .card{background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03));border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 8px 30px rgba(0,0,0,.25)}
-    .grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}
-    @media(min-width:860px){.grid{grid-template-columns:1fr 1fr}}
-    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-    label{font-size:13px;color:var(--muted)}
-    input{width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(0,0,0,.18);color:var(--text);outline:none}
-    .btn{padding:10px 14px;border-radius:12px;border:1px solid var(--line);background:var(--btn);color:var(--text);cursor:pointer;font-weight:800}
-    .btn:hover{background:var(--btn2)}
-    .btn:disabled{opacity:.55;cursor:not-allowed}
-    .small{font-size:12px;color:var(--muted)}
-    .bigcode{font-size:28px;letter-spacing:3px;font-weight:900}
-    .pill{display:inline-flex;align-items:center;gap:8px;padding:7px 10px;border-radius:999px;border:1px solid var(--line);background:rgba(0,0,0,.14);color:var(--muted);font-size:12px}
-    .dot{width:8px;height:8px;border-radius:999px;background:var(--muted);display:inline-block}
-    .dot.good{background:var(--good)} .dot.bad{background:var(--bad)}
-    hr{border:0;border-top:1px solid var(--line);margin:14px 0}
-    .choices{display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px}
-    @media(min-width:720px){.choices{grid-template-columns:1fr 1fr}}
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>${title}</title>
+<style>
+:root{--bg:#0b1020;--text:#e7ecff;--muted:#a9b3d9;--line:#23305c;--btn:#2d3a6b;--btn2:#1f2a53;--good:#37d67a;--bad:#ff5a5f}
+*{box-sizing:border-box;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+body{margin:0;background:radial-gradient(1200px 800px at 20% 10%, #1a2550 0%, var(--bg) 55%);color:var(--text)}
+a{color:var(--text);text-decoration:none}
+.container{max-width:980px;margin:0 auto;padding:24px}
+.header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+h1{margin:0;font-size:22px}
+.card{background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03));border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 8px 30px rgba(0,0,0,.25)}
+.grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}
+@media(min-width:860px){.grid{grid-template-columns:1fr 1fr}}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+label{font-size:13px;color:var(--muted)}
+input{width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(0,0,0,.18);color:var(--text);outline:none}
+.btn{padding:10px 14px;border-radius:12px;border:1px solid var(--line);background:var(--btn);color:var(--text);cursor:pointer;font-weight:800}
+.btn:hover{background:var(--btn2)}
+.btn:disabled{opacity:.55;cursor:not-allowed}
+.small{font-size:12px;color:var(--muted)}
+.bigcode{font-size:28px;letter-spacing:3px;font-weight:900}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:7px 10px;border-radius:999px;border:1px solid var(--line);background:rgba(0,0,0,.14);color:var(--muted);font-size:12px}
+.dot{width:8px;height:8px;border-radius:999px;background:var(--muted);display:inline-block}
+.dot.good{background:var(--good)} .dot.bad{background:var(--bad)}
+hr{border:0;border-top:1px solid var(--line);margin:14px 0}
+.choices{display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px}
+@media(min-width:720px){.choices{grid-template-columns:1fr 1fr}}
 
-    /* ĐÁP ÁN: nền màu (JS set), chữ trắng */
-    .choice{
-      display:flex;align-items:center;gap:12px;
-      padding:14px 14px;border-radius:14px;
-      border:1px solid rgba(255,255,255,.32);
-      background:#1b263b;
-      color:#fff;
-      cursor:pointer;text-align:left;
-      transition:filter .15s ease, transform .05s ease;
-    }
-    .choice:hover{ filter:brightness(1.08); }
-    .choice:active{ transform:translateY(1px); }
-    .choice[disabled]{opacity:.78;cursor:not-allowed;filter:none;}
-    .choice .opt{
-      width:34px;height:34px;border-radius:10px;
-      display:flex;align-items:center;justify-content:center;
-      font-weight:900;letter-spacing:.5px;
-      background:rgba(231,236,255,.95);color:#0b1020;
-      border:1px solid rgba(0,0,0,.18);flex:0 0 auto
-    }
-    .choice .txt{flex:1;font-weight:700;line-height:1.25;color:#fff}
+.choice{
+  display:flex;align-items:center;gap:12px;
+  padding:14px 14px;border-radius:14px;
+  border:1px solid rgba(255,255,255,.32);
+  background:#1b263b;color:#fff;
+  cursor:pointer;text-align:left;
+  transition:filter .15s ease, transform .05s ease;
+}
+.choice:hover{ filter:brightness(1.08); }
+.choice:active{ transform:translateY(1px); }
+.choice[disabled]{opacity:.78;cursor:not-allowed;filter:none;}
+.choice .opt{
+  width:34px;height:34px;border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  font-weight:900;letter-spacing:.5px;
+  background:rgba(231,236,255,.95);color:#0b1020;
+  border:1px solid rgba(0,0,0,.18);flex:0 0 auto
+}
+.choice .txt{flex:1;font-weight:700;line-height:1.25;color:#fff}
 
-    .badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:12px;border:1px solid var(--line);background:rgba(0,0,0,.14);color:var(--muted)}
-    .good{color:var(--good)} .bad{color:var(--bad)}
-    table{width:100%;border-collapse:collapse;margin-top:10px}
-    th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left;font-size:14px}
-    th{color:var(--muted);font-weight:800}
+.badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:12px;border:1px solid var(--line);background:rgba(0,0,0,.14);color:var(--muted)}
+.good{color:var(--good)} .bad{color:var(--bad)}
+table{width:100%;border-collapse:collapse;margin-top:10px}
+th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left;font-size:14px}
+th{color:var(--muted);font-weight:800}
 
-    .overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;padding:16px;z-index:9999}
-    .modal{max-width:720px;width:100%}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;padding:16px;z-index:9999}
+.modal{max-width:720px;width:100%}
 
-    /* ===== TIMER chạy quanh khung card câu hỏi ===== */
-    .qaCard{ position:relative; overflow:hidden; }
-    .timer-svg{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
-    .timer-track{ fill:none; stroke:rgba(255,255,255,.18); stroke-width:6; }
-    .timer-prog{
-      fill:none; stroke:rgba(255, 215, 0, .95); stroke-width:6;
-      stroke-linecap:round; stroke-linejoin:round;
-      opacity:0;
-    }
+/* timer quanh khung */
+.qaCard{ position:relative; overflow:hidden; }
+.timer-svg{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+.timer-track{ fill:none; stroke:rgba(255,255,255,.18); stroke-width:6; }
+.timer-prog{
+  fill:none; stroke:rgba(255, 215, 0, .95); stroke-width:6;
+  stroke-linecap:round; stroke-linejoin:round;
+  opacity:0;
+}
 
-    /* ===== Splash screen: click mới vào ===== */
-    .splash{
-      position:fixed; inset:0;
-      background:#000;
-      display:flex; align-items:center; justify-content:center;
-      z-index:999999;
-      padding:0;
-    }
-    .splash img{
-      width:100%; height:100%;
-      object-fit:cover;
-      display:block;
-    }
-    .splash.hide{
-      opacity:0;
-      pointer-events:none;
-      transition:opacity .45s ease;
-    }
-    .splash-hint{
-      position:fixed;
-      bottom:14px; left:50%;
-      transform:translateX(-50%);
-      background:rgba(0,0,0,.55);
-      border:1px solid rgba(255,255,255,.25);
-      color:#fff;
-      padding:6px 10px;
-      border-radius:999px;
-      font-size:12px;
-      z-index:1000000;
-    }
-  </style>
+/* splash click mới vào */
+.splash{
+  position:fixed; inset:0;
+  background:#000;
+  display:flex; align-items:center; justify-content:center;
+  z-index:999999;
+  padding:0;
+}
+.splash img{ width:100%; height:100%; object-fit:cover; display:block; }
+.splash.hide{ opacity:0; pointer-events:none; transition:opacity .45s ease; }
+.splash-hint{
+  position:fixed;
+  bottom:14px; left:50%;
+  transform:translateX(-50%);
+  background:rgba(0,0,0,.55);
+  border:1px solid rgba(255,255,255,.25);
+  color:#fff;
+  padding:6px 10px;
+  border-radius:999px;
+  font-size:12px;
+  z-index:1000000;
+}
+</style>
 </head>
 <body>
-  <div id="splash" class="splash">
-    <img src="/img/splash.png" alt="Splash"/>
-    <div class="splash-hint">Bấm để vào</div>
-  </div>
+<div id="splash" class="splash">
+  <img src="/img/splash.png" alt="Splash"/>
+  <div class="splash-hint">Bấm để vào</div>
+</div>
 
-  <script src="/socket.io/socket.io.js"></script>
-  <div class="container">${body}</div>
+<script src="/socket.io/socket.io.js"></script>
+<div class="container">${bodyHtml}</div>
 
 <script>
-  (function(){
-    var splash = document.getElementById("splash");
-    if(!splash) return;
+// ✅ Splash chỉ hiện 1 lần ngay lúc truy cập link
+(function(){
+  var splash = document.getElementById('splash');
+  if(!splash) return;
 
-    var KEY = "splash_shown_once_v1";
-
-    // ✅ Nếu đã từng xem splash -> bỏ qua luôn
-    try{
-      if (localStorage.getItem(KEY) === "1") {
-        splash.remove();
-        return;
-      }
-    }catch(e){}
-
-    function hideSplash(){
-      // ✅ đánh dấu đã xem (chỉ 1 lần)
-      try{ localStorage.setItem(KEY, "1"); }catch(e){}
-
-      splash.classList.add("hide");
-      setTimeout(function(){
-        if (splash) splash.remove();
-      }, 500);
+  var KEY = 'splash_shown_once_v1';
+  try{
+    if (localStorage.getItem(KEY) === '1') {
+      splash.remove();
+      return;
     }
+  }catch(e){}
 
-    // ✅ CHỈ khi click mới vào
-    splash.addEventListener("click", hideSplash);
-  })();
+  function hideSplash(){
+    try{ localStorage.setItem(KEY, '1'); }catch(e){}
+    splash.classList.add('hide');
+    setTimeout(function(){ if(splash) splash.remove(); }, 500);
+  }
+
+  splash.addEventListener('click', hideSplash);
+})();
 </script>
+</body>
+</html>`;
 }
 
 /* ================== ROUTES ================== */
@@ -431,6 +418,7 @@ app.get("/host-logout", (req, res) => {
   return res.redirect("/play");
 });
 
+// /host?key=... set cookie nhanh
 app.get("/host", (req, res, next) => {
   const k = String(req.query.key || "").trim();
   if (k && k === HOST_KEY) {
@@ -458,7 +446,7 @@ app.get("/host", (req, res, next) => {
           <div>
             <div class="small">Mã phòng</div>
             <div id="roomCode" class="bigcode">—</div>
-            <div class="small">Prep <b>0.5s</b> → chạy timer viền <b>22s</b>.</div>
+            <div class="small">Prep <b>0.5s</b> → timer viền chạy <b>22s</b> (không hiện giây).</div>
           </div>
           <div class="row">
             <span class="pill">Người chơi: <b id="playersCount">0</b></span>
@@ -480,7 +468,7 @@ app.get("/host", (req, res, next) => {
         <div class="row" style="margin-top:8px">
           <span class="badge">Đã trả lời: <b id="qAnswered">0</b></span>
         </div>
-        <div id="choices" class="choices"></div>
+        <div id="choicesHost" class="choices"></div>
       </div>
     </div>
 
@@ -516,7 +504,7 @@ app.get("/host", (req, res, next) => {
       };
       function fmtMs(ms){ return (ms/1000).toFixed(2) + "s"; }
 
-      // ===== Random màu cho 4 đáp án (tối, chữ trắng rõ, không trùng) =====
+      // ===== Màu đáp án (tối + chữ trắng rõ + không trùng) =====
       var ANSWER_COLOR_POOL = [
         "#1D3557","#0B3D91","#264653","#283618",
         "#2F3E46","#3A0CA3","#5A189A","#6A040F",
@@ -546,7 +534,7 @@ app.get("/host", (req, res, next) => {
         });
       }
 
-      // ===== Timer chạy quanh khung card (SVG rect dash) =====
+      // ===== Timer chạy quanh khung card =====
       function ensureTimer(cardId){
         var card = $(cardId);
         if (!card) return null;
@@ -591,10 +579,10 @@ app.get("/host", (req, res, next) => {
           prog.setAttribute("rx", rx);
           prog.setAttribute("ry", rx);
 
-          try {
+          try{
             obj.len = prog.getTotalLength();
             prog.style.strokeDasharray = String(obj.len);
-          } catch(e) {}
+          }catch(e){}
         };
 
         window.addEventListener("resize", function(){ obj.resize(); });
@@ -627,12 +615,9 @@ app.get("/host", (req, res, next) => {
           }
 
           p = Math.max(0, Math.min(1, p));
-          var off = len * (1 - p);
-          t.prog.style.strokeDashoffset = String(off);
-
+          t.prog.style.strokeDashoffset = String(len * (1 - p));
           if (p < 1) t.raf = requestAnimationFrame(step);
         }
-
         t.raf = requestAnimationFrame(step);
       }
 
@@ -644,6 +629,7 @@ app.get("/host", (req, res, next) => {
         t.prog.style.opacity = "0";
       }
 
+      // ===== Audio =====
       var audio = $("qAudio");
       var soundBtn = $("soundBtn");
       function stopAudio(){ try{ audio.pause(); audio.currentTime = 0; }catch(e){} }
@@ -660,6 +646,7 @@ app.get("/host", (req, res, next) => {
         audio.play().then(function(){ soundBtn.style.display = "none"; }).catch(function(){});
       };
 
+      // ===== UI trạng thái =====
       var dot = $("connDot");
       var text = $("connText");
       function setConn(ok, msg){
@@ -675,7 +662,6 @@ app.get("/host", (req, res, next) => {
       function hidePopup(){ $("fastPopup").style.display = "none"; }
       function showPopup(list, showMs){
         if (popupTimer) clearTimeout(popupTimer);
-
         if (!list || !list.length){
           $("fastBody").innerHTML = '<tr><td colspan="4" class="small">Không có ai trả lời đúng.</td></tr>';
         } else {
@@ -750,24 +736,17 @@ app.get("/host", (req, res, next) => {
         $("qText").textContent = q.text;
         $("qAnswered").textContent = "0";
 
-        $("choices").innerHTML = q.choices.map(function(c,i){
+        $("choicesHost").innerHTML = q.choices.map(function(c,i){
           var letter = String.fromCharCode(65+i);
-          return '<div class="choice">' +
-                   '<span class="opt">' + letter + '</span>' +
-                   '<span class="txt">' + esc(c) + '</span>' +
-                 '</div>';
+          return '<div class="choice"><span class="opt">' + letter + '</span><span class="txt">' + esc(c) + '</span></div>';
         }).join("");
 
-        applyAnswerColors("choices");
+        applyAnswerColors("choicesHost");
 
-        // start timer đúng thời gian trả lời (không hiển thị giây)
         var delay = Math.max(0, q.startedAtMs - (q.serverNowMs || Date.now()));
         var startLocalMs = Date.now() + delay;
 
-        // nhạc chạy từ lúc bắt đầu trả lời
         playAudioAfter(delay);
-
-        // timer viền chạy đúng 22s
         startTimer("qaCardHost", startLocalMs, q.timeLimitSec * 1000);
       });
 
@@ -775,19 +754,21 @@ app.get("/host", (req, res, next) => {
         stopAudio(); stopTimer("qaCardHost");
 
         var totalTop15 = p.totalTop15 || [];
-        $("lbBody").innerHTML = totalTop15.map(function(x,i){
+        $("lbBody").innerHTML = (totalTop15.length ? totalTop15 : []).map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
-        }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có dữ liệu.</td></tr>";
+        }).join("") || '<tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr>';
 
         showPopup(p.fastTop5 || [], p.popupShowMs || 7000);
       });
 
       socket.on("game:end", function(p){
         stopAudio(); stopTimer("qaCardHost");
+
         var totalTop15 = p.totalTop15 || [];
-        $("lbBody").innerHTML = totalTop15.map(function(x,i){
+        $("lbBody").innerHTML = (totalTop15.length ? totalTop15 : []).map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
-        }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có dữ liệu.</td></tr>";
+        }).join("") || '<tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr>';
+
         alert("Kết thúc game! Tổng người chơi: " + p.totalPlayers);
       });
 
@@ -837,7 +818,7 @@ app.get("/play", (_, res) => {
       <div id="qaCardPlay" class="card qaCard">
         <div class="small">Câu hỏi</div>
         <h2 id="qText" style="margin:6px 0 0;font-size:18px">—</h2>
-        <div id="choices" class="choices"></div>
+        <div id="choicesPlay" class="choices"></div>
         <div id="feedback" class="small" style="margin-top:10px"></div>
       </div>
     </div>
@@ -874,7 +855,7 @@ app.get("/play", (_, res) => {
       };
       function fmtMs(ms){ return (ms/1000).toFixed(2) + "s"; }
 
-      // ===== Random màu cho 4 đáp án (tối, chữ trắng rõ, không trùng) =====
+      // ===== Màu đáp án =====
       var ANSWER_COLOR_POOL = [
         "#1D3557","#0B3D91","#264653","#283618",
         "#2F3E46","#3A0CA3","#5A189A","#6A040F",
@@ -904,7 +885,7 @@ app.get("/play", (_, res) => {
         });
       }
 
-      // ===== Timer chạy quanh khung card (SVG rect dash) =====
+      // ===== Timer quanh khung =====
       function ensureTimer(cardId){
         var card = $(cardId);
         if (!card) return null;
@@ -949,10 +930,10 @@ app.get("/play", (_, res) => {
           prog.setAttribute("rx", rx);
           prog.setAttribute("ry", rx);
 
-          try {
+          try{
             obj.len = prog.getTotalLength();
             prog.style.strokeDasharray = String(obj.len);
-          } catch(e) {}
+          }catch(e){}
         };
 
         window.addEventListener("resize", function(){ obj.resize(); });
@@ -985,12 +966,9 @@ app.get("/play", (_, res) => {
           }
 
           p = Math.max(0, Math.min(1, p));
-          var off = len * (1 - p);
-          t.prog.style.strokeDashoffset = String(off);
-
+          t.prog.style.strokeDashoffset = String(len * (1 - p));
           if (p < 1) t.raf = requestAnimationFrame(step);
         }
-
         t.raf = requestAnimationFrame(step);
       }
 
@@ -1002,6 +980,7 @@ app.get("/play", (_, res) => {
         t.prog.style.opacity = "0";
       }
 
+      // ===== Audio =====
       var audio = $("qAudio");
       var soundBtn = $("soundBtn");
       function stopAudio(){ try{ audio.pause(); audio.currentTime = 0; }catch(e){} }
@@ -1018,6 +997,7 @@ app.get("/play", (_, res) => {
         audio.play().then(function(){ soundBtn.style.display = "none"; }).catch(function(){});
       };
 
+      // ===== Kết nối =====
       var dot = $("connDot");
       var text = $("connText");
       function setConn(ok, msg){
@@ -1033,11 +1013,10 @@ app.get("/play", (_, res) => {
       var roomCode = null;
       var myAnswered = false;
       var enableTimer = null;
-
       function clearEnable(){ if (enableTimer) clearTimeout(enableTimer); enableTimer = null; }
 
       function setAnswerEnabled(enabled){
-        Array.prototype.forEach.call($("choices").querySelectorAll("button.choice"), function(b){
+        Array.prototype.forEach.call($("choicesPlay").querySelectorAll("button.choice"), function(b){
           if (!myAnswered) {
             if (enabled) b.removeAttribute("disabled");
             else b.setAttribute("disabled","disabled");
@@ -1045,11 +1024,11 @@ app.get("/play", (_, res) => {
         });
       }
 
+      // ===== Popup top 5 =====
       var popupTimer = null;
       function hidePopup(){ $("fastPopup").style.display = "none"; }
       function showPopup(list, showMs){
         if (popupTimer) clearTimeout(popupTimer);
-
         if (!list || !list.length){
           $("fastBody").innerHTML = '<tr><td colspan="4" class="small">Không có ai trả lời đúng.</td></tr>';
         } else {
@@ -1084,7 +1063,7 @@ app.get("/play", (_, res) => {
         $("feedback").textContent = "";
         $("qText").textContent = q.text;
 
-        $("choices").innerHTML = q.choices.map(function(c,i){
+        $("choicesPlay").innerHTML = q.choices.map(function(c,i){
           var letter = String.fromCharCode(65+i);
           return '<button class="choice" data-i="' + i + '" disabled>' +
                    '<span class="opt">' + letter + '</span>' +
@@ -1092,24 +1071,19 @@ app.get("/play", (_, res) => {
                  '</button>';
         }).join("");
 
-        applyAnswerColors("choices");
+        applyAnswerColors("choicesPlay");
 
-        // delay chuẩn theo serverNowMs (không hiển thị giây)
         var delay = Math.max(0, q.startedAtMs - (q.serverNowMs || Date.now()));
         var startLocalMs = Date.now() + delay;
 
-        // nhạc chạy từ lúc bắt đầu trả lời
         playAudioAfter(delay);
-
-        // timer viền chạy đúng 22s
         startTimer("qaCardPlay", startLocalMs, q.timeLimitSec * 1000);
 
-        // chỉ cho bấm đáp án khi bắt đầu trả lời
         enableTimer = setTimeout(function(){
           setAnswerEnabled(true);
         }, delay);
 
-        Array.prototype.forEach.call($("choices").querySelectorAll("button.choice"), function(btn){
+        Array.prototype.forEach.call($("choicesPlay").querySelectorAll("button.choice"), function(btn){
           btn.onclick = function(){
             if (myAnswered) return;
             if (btn.hasAttribute("disabled")) return;
@@ -1139,9 +1113,9 @@ app.get("/play", (_, res) => {
         stopAudio(); stopTimer("qaCardPlay"); clearEnable();
 
         var totalTop15 = p.totalTop15 || [];
-        $("lbBody").innerHTML = totalTop15.map(function(x,i){
+        $("lbBody").innerHTML = (totalTop15.length ? totalTop15 : []).map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
-        }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có dữ liệu.</td></tr>";
+        }).join("") || '<tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr>';
 
         showPopup(p.fastTop5 || [], p.popupShowMs || 7000);
       });
@@ -1150,23 +1124,23 @@ app.get("/play", (_, res) => {
         stopAudio(); stopTimer("qaCardPlay"); clearEnable();
 
         var totalTop15 = p.totalTop15 || [];
-        $("lbBody").innerHTML = totalTop15.map(function(x,i){
+        $("lbBody").innerHTML = (totalTop15.length ? totalTop15 : []).map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
-        }).join("") || "<tr><td colspan=\\"3\\" class=\\"small\\">Chưa có dữ liệu.</td></tr>";
+        }).join("") || '<tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr>';
+
         alert("Kết thúc game! Tổng người chơi: " + p.totalPlayers);
       });
     </script>
   `));
 });
 
-/* ================== SOCKET.IO (Host key chặn host events) ================== */
+/* ================== SOCKET.IO ================== */
 function socketIsHost(socket) {
   const cookies = parseCookies(socket.request.headers.cookie || "");
   return cookies[HOST_COOKIE_NAME] === hostSig();
 }
 
 io.on("connection", (socket) => {
-  /* HOST */
   socket.on("host:createRoom", (_, ack) => {
     if (!socketIsHost(socket)) return ack && ack({ ok: false, error: "Bạn cần HOST KEY để dùng chức năng Host." });
 
@@ -1224,8 +1198,8 @@ io.on("connection", (socket) => {
     if (!room.started) return ack && ack({ ok: false, error: "Chưa bắt đầu" });
 
     endQuestion(room);
-
     room.qIndex += 1;
+
     if (room.qIndex >= QUIZ.questions.length) {
       endGame(room);
       return ack && ack({ ok: true, ended: true });
@@ -1235,7 +1209,6 @@ io.on("connection", (socket) => {
     ack && ack({ ok: true, ended: false });
   });
 
-  /* PLAYER */
   socket.on("player:join", ({ code, name }, ack) => {
     const room = rooms.get(code);
     if (!room) return ack && ack({ ok: false, error: "Mã phòng không đúng" });
