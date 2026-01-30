@@ -65,30 +65,30 @@ function requireHost(req, res, next) {
 }
 
 /* ================== QUIZ ================== */
-const PRE_DELAY_MS = 500;      // ✅ CHUẨN BỊ 0.5s -> sau đó nhạc chạy + bắt đầu trả lời
+const PRE_DELAY_MS = 500;      // ✅ chuẩn bị 0.5s -> sau đó nhạc chạy + bắt đầu trả lời
 const POPUP_SHOW_MS = 7000;    // popup top 5 hiện 7s
 const MAX_POINTS = 1000;
 
 const QUIZ = {
-  title: "Quiz Realtime – 20s + Nhạc Olympia + Popup Top 5",
+  title: "Quiz Realtime – 22s + Nhạc Olympia + Popup Top 5",
   questions: [
     {
       text: "1) Thủ đô của Việt Nam là gì?",
       choices: ["TP.HCM", "Hà Nội", "Đà Nẵng", "Huế"],
       correctIndex: 1,
-      timeLimitSec: 20
+      timeLimitSec: 22
     },
     {
       text: "2) 5 x 6 = ?",
       choices: ["11", "25", "30", "56"],
       correctIndex: 2,
-      timeLimitSec: 20
+      timeLimitSec: 22
     },
     {
       text: "3) Biển Đông tiếng Anh là gì?",
       choices: ["East Sea", "Red Sea", "Black Sea", "Yellow Sea"],
       correctIndex: 0,
-      timeLimitSec: 20
+      timeLimitSec: 22
     }
   ]
 };
@@ -106,7 +106,10 @@ const app = express();
 app.use(express.urlencoded({ extended: false }));
 
 // phục vụ file nhạc: public/audio/olympia.mp3
-app.use("/audio", express.static(path.join(__dirname, "public", "audio"), { maxAge: "7d" }));
+app.use(
+  "/audio",
+  express.static(path.join(__dirname, "public", "audio"), { maxAge: "7d" })
+);
 
 const server = http.createServer(app);
 const io = new Server(server);
@@ -138,8 +141,8 @@ function safeQuestionPayload(room) {
     text: q.text,
     choices: q.choices,
     timeLimitSec: q.timeLimitSec,
-    startedAtMs: room.qStartAtMs,  // thời điểm bắt đầu TRẢ LỜI (server)
-    serverNowMs: Date.now(),       // ✅ để client tính delay chuẩn, không lệch do đồng hồ máy
+    startedAtMs: room.qStartAtMs, // thời điểm bắt đầu TRẢ LỜI (server)
+    serverNowMs: Date.now(),      // ✅ client tính delay chuẩn, không lệch do đồng hồ máy
     preDelayMs: PRE_DELAY_MS
   };
 }
@@ -172,7 +175,6 @@ function broadcast(room) {
 function startQuestion(room) {
   if (room.timer) clearTimeout(room.timer);
 
-  // bắt đầu trả lời sau 0.5s
   room.qStartAtMs = Date.now() + PRE_DELAY_MS;
 
   for (const p of room.players.values()) p.lastAnswer = null;
@@ -181,8 +183,10 @@ function startQuestion(room) {
 
   const q = QUIZ.questions[room.qIndex];
 
-  // tổng thời gian: prep 0.5s + 20s trả lời
-  room.timer = setTimeout(() => endQuestion(room), PRE_DELAY_MS + q.timeLimitSec * 1000);
+  room.timer = setTimeout(
+    () => endQuestion(room),
+    PRE_DELAY_MS + q.timeLimitSec * 1000
+  );
 
   broadcast(room);
 }
@@ -384,7 +388,7 @@ app.get("/host", (req, res, next) => {
           <div>
             <div class="small">Mã phòng</div>
             <div id="roomCode" class="bigcode">—</div>
-            <div class="small">Chuẩn bị <b>0.5s</b> → nhạc chạy + bắt đầu trả lời <b>20s</b>.</div>
+            <div class="small">Chuẩn bị <b>0.5s</b> → nhạc chạy + bắt đầu trả lời <b>22s</b>.</div>
           </div>
           <div class="row">
             <span class="pill">Người chơi: <b id="playersCount">0</b></span>
@@ -558,7 +562,7 @@ app.get("/host", (req, res, next) => {
                  '</div>';
         }).join("");
 
-        // ✅ tính delay theo serverNowMs (không lệch đồng hồ máy)
+        // ✅ delay theo serverNowMs (không lệch đồng hồ máy)
         var delay = Math.max(0, q.startedAtMs - (q.serverNowMs || Date.now()));
         playAudioAfter(delay);
       });
@@ -633,7 +637,7 @@ app.get("/play", (_, res) => {
           <span class="pill">Hạng (tạm tính): <b id="rank">—</b></span>
           <span class="pill"><b id="timeLeft">—</b></span>
         </div>
-        <p class="small" style="margin:10px 0 0">Chuẩn bị <b>0.5s</b> → nhạc chạy + bắt đầu trả lời <b>20s</b>.</p>
+        <p class="small" style="margin:10px 0 0">Chuẩn bị <b>0.5s</b> → nhạc chạy + bắt đầu trả lời <b>22s</b>.</p>
       </div>
 
       <div class="card">
@@ -779,7 +783,6 @@ app.get("/play", (_, res) => {
         $("feedback").textContent = "";
         $("qText").textContent = q.text;
 
-        // tạo đáp án (disable trong prep)
         $("choices").innerHTML = q.choices.map(function(c,i){
           var letter = String.fromCharCode(65+i);
           return '<button class="choice" data-i="' + i + '" disabled>' +
@@ -788,17 +791,12 @@ app.get("/play", (_, res) => {
                  '</button>';
         }).join("");
 
-        // ✅ delay chuẩn theo serverNowMs
         var delay = Math.max(0, q.startedAtMs - (q.serverNowMs || Date.now()));
         var startLocalMs = Date.now() + delay;
 
-        // nhạc chạy đúng lúc bắt đầu
         playAudioAfter(delay);
-
-        // countdown đúng 0.5s + 20s
         setCountdown(startLocalMs, q.timeLimitSec);
 
-        // enable trả lời đúng lúc bắt đầu
         enableTimer = setTimeout(function(){
           setAnswerEnabled(true);
         }, delay);
@@ -960,7 +958,6 @@ io.on("connection", (socket) => {
     const q = QUIZ.questions[room.qIndex];
     if (!q) return ack && ack({ ok: false, error: "Không có câu hỏi" });
 
-    // server vẫn chặn trả lời trước giờ bắt đầu (0.5s)
     if (Date.now() < room.qStartAtMs) {
       return ack && ack({ ok: false, error: "Chưa bắt đầu, chờ 0.5 giây..." });
     }
@@ -1008,4 +1005,3 @@ io.on("connection", (socket) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () => console.log("Realtime quiz running on port", PORT));
-
