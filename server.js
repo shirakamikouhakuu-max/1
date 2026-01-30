@@ -65,7 +65,7 @@ function requireHost(req, res, next) {
 }
 
 /* ================== QUIZ ================== */
-const PRE_DELAY_MS = 1500;     // chuyển câu mới -> 3s sau mới bắt đầu (mới phát nhạc + cho trả lời)
+const PRE_DELAY_MS = 1500;     // chuyển câu mới -> 1.5s sau mới bắt đầu (mới phát nhạc + cho trả lời)
 const POPUP_SHOW_MS = 7000;    // popup top 5 hiện 7s
 const MAX_POINTS = 1000;
 
