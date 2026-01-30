@@ -221,7 +221,7 @@ function endGame(room) {
   broadcast(room);
 }
 
-/* ================== HTML LAYOUT (Splash chỉ 1 lần trong 1 tab) ================== */
+/* ================== HTML LAYOUT (Splash + Nhạc Splash + click tắt) ================== */
 function layout(title, bodyHtml) {
   return `<!doctype html>
 <html lang="vi">
@@ -230,7 +230,7 @@ function layout(title, bodyHtml) {
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>${title}</title>
 
-<!-- ✅ Quyết định hiển thị splash ngay trong HEAD để không nháy -->
+<!-- ✅ quyết định hiển thị splash ngay trong HEAD để không nháy -->
 <script>
 (function(){
   try{
@@ -330,16 +330,22 @@ th{color:var(--muted);font-weight:800}
   z-index:1000000;
 }
 
-/* ✅ Chống nháy + chỉ hiện splash 1 lần */
+/* ✅ chống nháy + chỉ hiện splash 1 lần */
 .container{ visibility:hidden; }
 .splash-seen .container{ visibility:visible; }
 .splash-seen #splash{ display:none !important; }
 </style>
 </head>
 <body>
+
 <div id="splash" class="splash">
   <img src="/img/splash.png" alt="Splash"/>
   <div class="splash-hint">Bấm để vào</div>
+
+  <!-- ✅ NHẠC SPLASH (đổi file nếu muốn) -->
+  <audio id="splashAudio" preload="auto">
+    <source src="/audio/splash.mp3" type="audio/mpeg">
+  </audio>
 </div>
 
 <script src="/socket.io/socket.io.js"></script>
@@ -350,19 +356,50 @@ th{color:var(--muted);font-weight:800}
   var splash = document.getElementById('splash');
   if(!splash) return;
 
-  // nếu đã "seen" trong tab này thì HEAD đã ẩn splash rồi
+  // nếu đã seen trong tab này thì HEAD đã ẩn splash
   if (document.documentElement.classList.contains('splash-seen')) return;
+
+  var audio = document.getElementById('splashAudio');
+
+  function stopSplashAudio(){
+    if (!audio) return;
+    try{
+      audio.pause();
+      audio.currentTime = 0;
+    }catch(e){}
+  }
+
+  // ✅ cố gắng autoplay (có thể bị chặn)
+  if (audio) {
+    try {
+      audio.volume = 1.0;
+      var p = audio.play();
+      if (p && typeof p.catch === 'function') p.catch(function(){});
+    } catch(e){}
+  }
 
   function hideSplash(){
     try{ sessionStorage.setItem('splash_seen_session_v1', '1'); }catch(e){}
+    stopSplashAudio();
     document.documentElement.classList.add('splash-seen');
     splash.classList.add('hide');
     setTimeout(function(){ if(splash) splash.remove(); }, 500);
   }
 
+  // ✅ click splash: tắt nhạc + tắt splash
   splash.addEventListener('click', hideSplash);
+
+  // ✅ nếu browser chặn autoplay: lần chạm đầu cho phép play rồi click sẽ tắt luôn (đúng yêu cầu)
+  splash.addEventListener('pointerdown', function(){
+    if (!audio) return;
+    try{
+      var p = audio.play();
+      if (p && typeof p.catch === 'function') p.catch(function(){});
+    }catch(e){}
+  }, { once: true });
 })();
 </script>
+
 </body>
 </html>`;
 }
@@ -635,8 +672,8 @@ app.get("/host", (req, res, next) => {
         t.prog.style.opacity = "0";
       }
 
-      var audio = $("qAudio");
-      var soundBtn = $("soundBtn");
+      var audio = document.getElementById("qAudio");
+      var soundBtn = document.getElementById("soundBtn");
       function stopAudio(){ try{ audio.pause(); audio.currentTime = 0; }catch(e){} }
       function playAudioAfter(delayMs){
         stopAudio();
@@ -647,8 +684,8 @@ app.get("/host", (req, res, next) => {
       }
       soundBtn.onclick = function(){ audio.play().then(function(){ soundBtn.style.display = "none"; }).catch(function(){}); };
 
-      var dot = $("connDot");
-      var text = $("connText");
+      var dot = document.getElementById("connDot");
+      var text = document.getElementById("connText");
       function setConn(ok, msg){
         dot.classList.remove("good","bad");
         dot.classList.add(ok ? "good" : "bad");
@@ -659,80 +696,84 @@ app.get("/host", (req, res, next) => {
       var state = null;
 
       var popupTimer = null;
-      function hidePopup(){ $("fastPopup").style.display = "none"; }
+      function hidePopup(){ document.getElementById("fastPopup").style.display = "none"; }
       function showPopup(list, showMs){
         if (popupTimer) clearTimeout(popupTimer);
+        var fastBody = document.getElementById("fastBody");
         if (!list || !list.length){
-          $("fastBody").innerHTML = '<tr><td colspan="4" class="small">Không có ai trả lời đúng.</td></tr>';
+          fastBody.innerHTML = '<tr><td colspan="4" class="small">Không có ai trả lời đúng.</td></tr>';
         } else {
-          $("fastBody").innerHTML = list.map(function(x,i){
+          fastBody.innerHTML = list.map(function(x,i){
             return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + fmtMs(x.elapsedMs) + "</td><td>+" + (x.points || 0) + "</td></tr>";
           }).join("");
         }
-        $("fastPopup").style.display = "flex";
+        document.getElementById("fastPopup").style.display = "flex";
         popupTimer = setTimeout(hidePopup, showMs || 7000);
       }
 
       function setButtons(){
-        $("btnCreate").disabled = !socket.connected;
-        $("btnStart").disabled  = !socket.connected || !code || (state && state.started);
-        $("btnReveal").disabled = !socket.connected || !code || !(state && state.started) || (state && state.ended);
-        $("btnNext").disabled   = !socket.connected || !code || !(state && state.started) || (state && state.ended);
+        document.getElementById("btnCreate").disabled = !socket.connected;
+        document.getElementById("btnStart").disabled  = !socket.connected || !code || (state && state.started);
+        document.getElementById("btnReveal").disabled = !socket.connected || !code || !(state && state.started) || (state && state.ended);
+        document.getElementById("btnNext").disabled   = !socket.connected || !code || !(state && state.started) || (state && state.ended);
       }
 
       socket.on("connect", function(){ setConn(true,"Đã kết nối"); setButtons(); });
       socket.on("disconnect", function(){ setConn(false,"Mất kết nối"); setButtons(); });
       socket.on("connect_error", function(){ setConn(false,"Lỗi kết nối"); setButtons(); });
 
-      $("btnCreate").onclick = function(){
+      document.getElementById("btnCreate").onclick = function(){
         socket.emit("host:createRoom", {}, function(resp){
           if (!resp || !resp.ok) return alert((resp && resp.error) || "Không tạo được phòng");
           code = resp.code;
-          $("roomCode").textContent = code;
+          document.getElementById("roomCode").textContent = code;
           hidePopup(); stopAudio(); stopTimer("qaCardHost"); setButtons();
         });
       };
 
-      $("btnStart").onclick = function(){
+      document.getElementById("btnStart").onclick = function(){
         socket.emit("host:start", { code: code }, function(resp){
           if (!resp || !resp.ok) return alert((resp && resp.error) || "Không thể bắt đầu");
           hidePopup(); stopAudio(); stopTimer("qaCardHost"); setButtons();
         });
       };
 
-      $("btnReveal").onclick = function(){
+      document.getElementById("btnReveal").onclick = function(){
         socket.emit("host:reveal", { code: code }, function(resp){
           if (!resp || !resp.ok) alert((resp && resp.error) || "Lỗi");
         });
       };
 
-      $("btnNext").onclick = function(){
+      document.getElementById("btnNext").onclick = function(){
         socket.emit("host:next", { code: code }, function(resp){
           if (!resp || !resp.ok) return alert((resp && resp.error) || "Lỗi");
           hidePopup(); stopAudio(); stopTimer("qaCardHost"); setButtons();
         });
       };
 
-      socket.on("players:count", function(p){ $("playersCount").textContent = String((p && p.count) || 0); });
+      socket.on("players:count", function(p){
+        document.getElementById("playersCount").textContent = String((p && p.count) || 0);
+      });
 
       socket.on("room:state", function(s){
         state = s;
         if (state && state.total != null && state.qIndex != null) {
-          $("qCounter").textContent = String(state.qIndex + 1) + "/" + String(state.total);
+          document.getElementById("qCounter").textContent = String(state.qIndex + 1) + "/" + String(state.total);
         }
         setButtons();
       });
 
       socket.on("question:progress", function(p){
-        $("qAnswered").textContent = String(p.answered) + "/" + String(p.totalPlayers);
+        document.getElementById("qAnswered").textContent = String(p.answered) + "/" + String(p.totalPlayers);
       });
 
       socket.on("question:start", function(q){
         hidePopup(); stopAudio(); stopTimer("qaCardHost");
-        $("qText").textContent = q.text;
-        $("qAnswered").textContent = "0";
 
-        $("choicesHost").innerHTML = q.choices.map(function(c,i){
+        document.getElementById("qText").textContent = q.text;
+        document.getElementById("qAnswered").textContent = "0";
+
+        document.getElementById("choicesHost").innerHTML = q.choices.map(function(c,i){
           var letter = String.fromCharCode(65+i);
           return '<div class="choice"><span class="opt">' + letter + '</span><span class="txt">' + esc(c) + '</span></div>';
         }).join("");
@@ -750,7 +791,7 @@ app.get("/host", (req, res, next) => {
         stopAudio(); stopTimer("qaCardHost");
 
         var totalTop15 = p.totalTop15 || [];
-        $("lbBody").innerHTML = (totalTop15.length ? totalTop15 : []).map(function(x,i){
+        document.getElementById("lbBody").innerHTML = (totalTop15.length ? totalTop15 : []).map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
         }).join("") || '<tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr>';
 
@@ -761,7 +802,7 @@ app.get("/host", (req, res, next) => {
         stopAudio(); stopTimer("qaCardHost");
 
         var totalTop15 = p.totalTop15 || [];
-        $("lbBody").innerHTML = (totalTop15.length ? totalTop15 : []).map(function(x,i){
+        document.getElementById("lbBody").innerHTML = (totalTop15.length ? totalTop15 : []).map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
         }).join("") || '<tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr>';
 
@@ -970,8 +1011,8 @@ app.get("/play", (_, res) => {
         t.prog.style.opacity = "0";
       }
 
-      var audio = $("qAudio");
-      var soundBtn = $("soundBtn");
+      var audio = document.getElementById("qAudio");
+      var soundBtn = document.getElementById("soundBtn");
       function stopAudio(){ try{ audio.pause(); audio.currentTime = 0; }catch(e){} }
       function playAudioAfter(delayMs){
         stopAudio();
@@ -982,8 +1023,8 @@ app.get("/play", (_, res) => {
       }
       soundBtn.onclick = function(){ audio.play().then(function(){ soundBtn.style.display = "none"; }).catch(function(){}); };
 
-      var dot = $("connDot");
-      var text = $("connText");
+      var dot = document.getElementById("connDot");
+      var text = document.getElementById("connText");
       function setConn(ok, msg){
         dot.classList.remove("good","bad");
         dot.classList.add(ok ? "good" : "bad");
@@ -1000,7 +1041,7 @@ app.get("/play", (_, res) => {
       function clearEnable(){ if (enableTimer) clearTimeout(enableTimer); enableTimer = null; }
 
       function setAnswerEnabled(enabled){
-        Array.prototype.forEach.call($("choicesPlay").querySelectorAll("button.choice"), function(b){
+        Array.prototype.forEach.call(document.getElementById("choicesPlay").querySelectorAll("button.choice"), function(b){
           if (!myAnswered) {
             if (enabled) b.removeAttribute("disabled");
             else b.setAttribute("disabled","disabled");
@@ -1009,32 +1050,33 @@ app.get("/play", (_, res) => {
       }
 
       var popupTimer = null;
-      function hidePopup(){ $("fastPopup").style.display = "none"; }
+      function hidePopup(){ document.getElementById("fastPopup").style.display = "none"; }
       function showPopup(list, showMs){
         if (popupTimer) clearTimeout(popupTimer);
+        var fastBody = document.getElementById("fastBody");
         if (!list || !list.length){
-          $("fastBody").innerHTML = '<tr><td colspan="4" class="small">Không có ai trả lời đúng.</td></tr>';
+          fastBody.innerHTML = '<tr><td colspan="4" class="small">Không có ai trả lời đúng.</td></tr>';
         } else {
-          $("fastBody").innerHTML = list.map(function(x,i){
+          fastBody.innerHTML = list.map(function(x,i){
             return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + fmtMs(x.elapsedMs) + "</td><td>+" + (x.points || 0) + "</td></tr>";
           }).join("");
         }
-        $("fastPopup").style.display = "flex";
+        document.getElementById("fastPopup").style.display = "flex";
         popupTimer = setTimeout(hidePopup, showMs || 7000);
       }
 
-      $("btnJoin").onclick = function(){
-        var code = $("code").value.trim().toUpperCase();
-        var name = $("name").value.trim();
+      document.getElementById("btnJoin").onclick = function(){
+        var code = document.getElementById("code").value.trim().toUpperCase();
+        var name = document.getElementById("name").value.trim();
         socket.emit("player:join", { code: code, name: name }, function(resp){
           if (!resp || !resp.ok) {
             joined = false;
-            $("joinStatus").innerHTML = '<span class="bad">✖ ' + esc((resp && resp.error) || "Không tham gia được") + '</span>';
+            document.getElementById("joinStatus").innerHTML = '<span class="bad">✖ ' + esc((resp && resp.error) || "Không tham gia được") + '</span>';
             return;
           }
           joined = true;
           roomCode = code;
-          $("joinStatus").innerHTML = '<span class="good">✔ Đã vào phòng ' + esc(code) + '</span>';
+          document.getElementById("joinStatus").innerHTML = '<span class="good">✔ Đã vào phòng ' + esc(code) + '</span>';
         });
       };
 
@@ -1043,10 +1085,10 @@ app.get("/play", (_, res) => {
 
         hidePopup(); stopAudio(); stopTimer("qaCardPlay"); clearEnable();
         myAnswered = false;
-        $("feedback").textContent = "";
-        $("qText").textContent = q.text;
+        document.getElementById("feedback").textContent = "";
+        document.getElementById("qText").textContent = q.text;
 
-        $("choicesPlay").innerHTML = q.choices.map(function(c,i){
+        document.getElementById("choicesPlay").innerHTML = q.choices.map(function(c,i){
           var letter = String.fromCharCode(65+i);
           return '<button class="choice" data-i="' + i + '" disabled>' +
                    '<span class="opt">' + letter + '</span>' +
@@ -1064,7 +1106,7 @@ app.get("/play", (_, res) => {
 
         enableTimer = setTimeout(function(){ setAnswerEnabled(true); }, delay);
 
-        Array.prototype.forEach.call($("choicesPlay").querySelectorAll("button.choice"), function(btn){
+        Array.prototype.forEach.call(document.getElementById("choicesPlay").querySelectorAll("button.choice"), function(btn){
           btn.onclick = function(){
             if (myAnswered) return;
             if (btn.hasAttribute("disabled")) return;
@@ -1075,12 +1117,12 @@ app.get("/play", (_, res) => {
 
             socket.emit("player:answer", { code: roomCode, choiceIndex: choiceIndex }, function(resp){
               if (!resp || !resp.ok) {
-                $("feedback").innerHTML = '<span class="bad">✖ ' + esc((resp && resp.error) || "Lỗi") + '</span>';
+                document.getElementById("feedback").innerHTML = '<span class="bad">✖ ' + esc((resp && resp.error) || "Lỗi") + '</span>';
                 return;
               }
-              $("score").textContent = String(resp.totalScore || 0);
-              $("rank").textContent = String(resp.rank || "—");
-              $("feedback").innerHTML = resp.correct
+              document.getElementById("score").textContent = String(resp.totalScore || 0);
+              document.getElementById("rank").textContent = String(resp.rank || "—");
+              document.getElementById("feedback").innerHTML = resp.correct
                 ? '<span class="good">✔ Đúng</span> • +' + resp.points + " điểm"
                 : '<span class="bad">✖ Sai</span> • +0 điểm';
             });
@@ -1094,7 +1136,7 @@ app.get("/play", (_, res) => {
         stopAudio(); stopTimer("qaCardPlay"); clearEnable();
 
         var totalTop15 = p.totalTop15 || [];
-        $("lbBody").innerHTML = (totalTop15.length ? totalTop15 : []).map(function(x,i){
+        document.getElementById("lbBody").innerHTML = (totalTop15.length ? totalTop15 : []).map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
         }).join("") || '<tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr>';
 
@@ -1105,7 +1147,7 @@ app.get("/play", (_, res) => {
         stopAudio(); stopTimer("qaCardPlay"); clearEnable();
 
         var totalTop15 = p.totalTop15 || [];
-        $("lbBody").innerHTML = (totalTop15.length ? totalTop15 : []).map(function(x,i){
+        document.getElementById("lbBody").innerHTML = (totalTop15.length ? totalTop15 : []).map(function(x,i){
           return "<tr><td>" + (i+1) + "</td><td>" + esc(x.name) + "</td><td>" + x.score + "</td></tr>";
         }).join("") || '<tr><td colspan="3" class="small">Chưa có dữ liệu.</td></tr>';
 
