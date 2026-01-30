@@ -221,7 +221,7 @@ function endGame(room) {
   broadcast(room);
 }
 
-/* ================== HTML LAYOUT (Splash + Nhạc Splash + click tắt) ================== */
+/* ================== HTML LAYOUT (Splash + Nhạc Splash nghe được) ================== */
 function layout(title, bodyHtml) {
   return `<!doctype html>
 <html lang="vi">
@@ -230,7 +230,6 @@ function layout(title, bodyHtml) {
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>${title}</title>
 
-<!-- ✅ quyết định hiển thị splash ngay trong HEAD để không nháy -->
 <script>
 (function(){
   try{
@@ -340,10 +339,9 @@ th{color:var(--muted);font-weight:800}
 
 <div id="splash" class="splash">
   <img src="/img/splash.png" alt="Splash"/>
-  <div class="splash-hint">Bấm để vào</div>
+  <div id="splashHint" class="splash-hint">Bấm để vào</div>
 
-  <!-- ✅ NHẠC SPLASH (đổi file nếu muốn) -->
-  <audio id="splashAudio" preload="auto">
+  <audio id="splashAudio" preload="auto" loop playsinline>
     <source src="/audio/splash.mp3" type="audio/mpeg">
   </audio>
 </div>
@@ -356,10 +354,11 @@ th{color:var(--muted);font-weight:800}
   var splash = document.getElementById('splash');
   if(!splash) return;
 
-  // nếu đã seen trong tab này thì HEAD đã ẩn splash
   if (document.documentElement.classList.contains('splash-seen')) return;
 
+  var hint = document.getElementById('splashHint');
   var audio = document.getElementById('splashAudio');
+  var audioStarted = false;
 
   function stopSplashAudio(){
     if (!audio) return;
@@ -369,12 +368,15 @@ th{color:var(--muted);font-weight:800}
     }catch(e){}
   }
 
-  // ✅ cố gắng autoplay (có thể bị chặn)
+  // thử autoplay (có thể bị chặn)
   if (audio) {
     try {
       audio.volume = 1.0;
       var p = audio.play();
-      if (p && typeof p.catch === 'function') p.catch(function(){});
+      if (p && typeof p.then === 'function') {
+        p.then(function(){ audioStarted = true; })
+         .catch(function(){ audioStarted = false; });
+      }
     } catch(e){}
   }
 
@@ -386,17 +388,24 @@ th{color:var(--muted);font-weight:800}
     setTimeout(function(){ if(splash) splash.remove(); }, 500);
   }
 
-  // ✅ click splash: tắt nhạc + tắt splash
-  splash.addEventListener('click', hideSplash);
+  // ✅ Click:
+  // - nếu chưa bật được nhạc: click lần 1 để bật nhạc (không tắt splash)
+  // - nếu đã bật nhạc: click lần 2 tắt nhạc + tắt splash
+  splash.addEventListener('click', function(){
+    if (!audio) return hideSplash();
 
-  // ✅ nếu browser chặn autoplay: lần chạm đầu cho phép play rồi click sẽ tắt luôn (đúng yêu cầu)
-  splash.addEventListener('pointerdown', function(){
-    if (!audio) return;
-    try{
-      var p = audio.play();
-      if (p && typeof p.catch === 'function') p.catch(function(){});
-    }catch(e){}
-  }, { once: true });
+    if (!audioStarted) {
+      audio.play().then(function(){
+        audioStarted = true;
+        if (hint) hint.textContent = "Nhạc đã bật ✅ Bấm lần nữa để vào";
+      }).catch(function(){
+        if (hint) hint.textContent = "Trình duyệt đang chặn âm thanh. Hãy bật âm lượng rồi bấm lại.";
+      });
+      return;
+    }
+
+    hideSplash();
+  });
 })();
 </script>
 
@@ -467,7 +476,6 @@ app.get("/host-logout", (req, res) => {
   return res.redirect("/play");
 });
 
-// /host?key=... set cookie nhanh
 app.get("/host", (req, res, next) => {
   const k = String(req.query.key || "").trim();
   if (k && k === HOST_KEY) {
@@ -884,7 +892,6 @@ app.get("/play", (_, res) => {
 
     <script>
       var socket = io();
-      var $ = function(id){ return document.getElementById(id); };
       var esc = function(s){
         return String(s).replace(/[&<>"']/g, function(m){
           return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]);
@@ -907,7 +914,7 @@ app.get("/play", (_, res) => {
         return pool.slice(0, n);
       }
       function applyAnswerColors(containerId){
-        var wrap = $(containerId);
+        var wrap = document.getElementById(containerId);
         if (!wrap) return;
         var nodes = wrap.querySelectorAll(".choice");
         var colors = pickAnswerColors(nodes.length);
@@ -918,7 +925,7 @@ app.get("/play", (_, res) => {
       }
 
       function ensureTimer(cardId){
-        var card = $(cardId);
+        var card = document.getElementById(cardId);
         if (!card) return null;
         if (card.__timerObj) return card.__timerObj;
 
@@ -1038,6 +1045,7 @@ app.get("/play", (_, res) => {
       var roomCode = null;
       var myAnswered = false;
       var enableTimer = null;
+
       function clearEnable(){ if (enableTimer) clearTimeout(enableTimer); enableTimer = null; }
 
       function setAnswerEnabled(enabled){
